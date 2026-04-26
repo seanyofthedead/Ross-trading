@@ -1,5 +1,8 @@
 __pycache__/
 *.py[cod]
+*.so
+*.pyd
+*.dylib
 *.egg-info/
 .venv/
 .mypy_cache/
@@ -10,3 +13,14 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Trading data + runtime artifacts
+data/
+logs/
+*.log
+*.csv
+*.parquet
+
+# OS
+.DS_Store
+Thumbs.db
