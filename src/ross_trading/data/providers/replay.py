@@ -205,7 +205,9 @@ class ReplayProvider:
             if date_from is not None and day < date_from:
                 continue
             if date_to is not None and day > date_to:
-                continue
+                # Directories are iterated in sorted ascending order, so
+                # every remaining entry will also exceed date_to.
+                break
             path = day_dir / f"{event_type.value}.jsonl.gz"
             if not path.exists():
                 continue
