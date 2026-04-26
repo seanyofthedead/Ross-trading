@@ -42,3 +42,6 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: end-to-end tests that exercise multiple data-layer components together",
+]
