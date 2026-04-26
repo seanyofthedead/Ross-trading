@@ -36,9 +36,11 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-# Pre-market start of a trading day in Cameron's Trading Plan window.
-DAY = date(2026, 4, 26)
-SESSION_START = datetime(2026, 4, 26, 11, 0, tzinfo=UTC)  # 7:00 AM ET
+# Stable historical date — 2025-01-02 is the first regular trading day
+# of 2025. We pin this so the test isn't sensitive to wall-clock drift.
+# 12:00 UTC = 7:00 AM EST, the start of Cameron's Trading Plan window.
+DAY = date(2025, 1, 2)
+SESSION_START = datetime(2025, 1, 2, 12, 0, tzinfo=UTC)  # 7:00 AM EST
 
 
 def _quote(offset_s: int, bid: str, ask: str) -> Quote:

@@ -24,6 +24,11 @@ from ross_trading.data.types import Bar, FloatRecord, Headline, Quote, Side, Tap
 
 SCHEMA_VERSION = 1
 
+# Versions a current build can still decode. New schemas append to this set
+# as they're introduced; the corresponding decoders must dispatch on the
+# version field and accept old payloads forever.
+SUPPORTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+
 
 class EventType(StrEnum):
     QUOTE = "quote"
@@ -45,8 +50,10 @@ def encode_event(event_type: EventType, payload: dict[str, Any], ts_recorded: da
 
 def decode_envelope(line: str) -> tuple[EventType, dict[str, Any]]:
     obj = json.loads(line)
-    if obj.get("_schema") != SCHEMA_VERSION:
-        msg = f"unsupported schema version: {obj.get('_schema')!r}"
+    version = obj.get("_schema")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        supported = sorted(SUPPORTED_SCHEMA_VERSIONS)
+        msg = f"unsupported schema version: {version!r} (supported: {supported})"
         raise ValueError(msg)
     return EventType(obj["type"]), obj["payload"]
 

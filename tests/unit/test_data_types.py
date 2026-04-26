@@ -46,6 +46,20 @@ def test_tape_defaults_to_unknown_side() -> None:
     assert tape.side is Side.UNKNOWN
 
 
+def test_bar_rejects_unknown_timeframe() -> None:
+    with pytest.raises(ValueError, match="must be a Timeframe value"):
+        Bar(
+            symbol="AVTX",
+            ts=UTC_NOW,
+            timeframe="banana",
+            open=Decimal("4.20"),
+            high=Decimal("4.30"),
+            low=Decimal("4.18"),
+            close=Decimal("4.25"),
+            volume=12_345,
+        )
+
+
 def test_headline_dedup_key_normalizes_title_and_ticker() -> None:
     a = Headline(
         ticker="avtx",

@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ross_trading.core.clock import VirtualClock
 from ross_trading.data.news_feed import HeadlineDeduper
 from ross_trading.data.types import Headline
 
@@ -23,37 +22,51 @@ def _h(
 
 
 def test_deduper_flags_exact_duplicate() -> None:
-    clock = VirtualClock(T0)
-    deduper = HeadlineDeduper(clock=clock)
+    deduper = HeadlineDeduper()
     assert deduper.is_duplicate(_h()) is False
     assert deduper.is_duplicate(_h()) is True
 
 
 def test_deduper_normalizes_whitespace_and_case() -> None:
-    clock = VirtualClock(T0)
-    deduper = HeadlineDeduper(clock=clock)
+    deduper = HeadlineDeduper()
     deduper.is_duplicate(_h(title="AVTX up on FDA approval"))
     assert deduper.is_duplicate(_h(title="  avtx UP  ON  fda APPROVAL ")) is True
 
 
 def test_deduper_distinguishes_sources() -> None:
-    clock = VirtualClock(T0)
-    deduper = HeadlineDeduper(clock=clock)
+    deduper = HeadlineDeduper()
     deduper.is_duplicate(_h(source="Benzinga"))
     assert deduper.is_duplicate(_h(source="Polygon")) is False
 
 
-def test_deduper_evicts_after_window() -> None:
-    clock = VirtualClock(T0)
-    deduper = HeadlineDeduper(window=timedelta(hours=1), clock=clock)
-    deduper.is_duplicate(_h())
-    clock.advance(3601)
-    assert deduper.is_duplicate(_h()) is False
+def test_deduper_evicts_after_window_using_event_time() -> None:
+    """Eviction must work without a clock — drives off headline.ts."""
+    deduper = HeadlineDeduper(window=timedelta(hours=1))
+    deduper.is_duplicate(_h(ts=T0))
+    later = _h(ts=T0 + timedelta(hours=1, seconds=1))
+    assert deduper.is_duplicate(later) is False
+
+
+def test_deduper_works_under_fast_replay() -> None:
+    """Regression: under AS_FAST_AS_POSSIBLE replay, no clock advance
+    happens. Eviction must still fire because it keys off headline.ts."""
+    deduper = HeadlineDeduper(window=timedelta(hours=1))
+    for i in range(10):
+        ts = T0 + timedelta(hours=i)
+        # Each headline is unique by title, so they all insert.
+        # The expiry pass on each insert evicts older ones.
+        h = _h(title=f"story {i}", ts=ts)
+        deduper.is_duplicate(h)
+    # By story 9 (T0 + 9h), only stories within the 1h window survive.
+    earliest_still_valid = _h(title="story 9", ts=T0 + timedelta(hours=9))
+    assert deduper.is_duplicate(earliest_still_valid) is True
+    # story 0 is long gone — re-inserting is a fresh entry, not a dup.
+    fresh = _h(title="story 0", ts=T0 + timedelta(hours=9))
+    assert deduper.is_duplicate(fresh) is False
 
 
 def test_deduper_respects_max_entries() -> None:
-    clock = VirtualClock(T0)
-    deduper = HeadlineDeduper(clock=clock, max_entries=3)
+    deduper = HeadlineDeduper(max_entries=3)
     for i in range(5):
         deduper.is_duplicate(_h(title=f"story {i}"))
     # First two should have been evicted by capacity bound.

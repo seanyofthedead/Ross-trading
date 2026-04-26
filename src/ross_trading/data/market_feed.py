@@ -3,12 +3,22 @@
 Concrete vendor implementations live under ``data/providers/``.
 Anything that streams quotes, bars, or tape prints — including
 recordings replayed from disk — implements :class:`MarketDataProvider`.
+
+Note on protocol shape: ``subscribe_*`` methods are declared as plain
+``def`` returning :class:`AsyncIterator`. Implementations are
+typically async generator functions (``async def`` with ``yield``);
+this is intentional — calling ``provider.subscribe_quotes(...)``
+returns an iterator directly without needing ``await``, which is the
+canonical pattern for streaming sources in Python (PEP 525).
+``inspect.iscoroutinefunction`` will return ``False`` for these
+methods; ``inspect.isasyncgenfunction`` will return ``True``.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from ross_trading.data.types import Timeframe
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -17,19 +27,7 @@ if TYPE_CHECKING:
     from ross_trading.data.types import Bar, Quote, Tape
 
 
-class Timeframe(StrEnum):
-    """Bar aggregation periods.
-
-    Not every provider supports every timeframe (10-second bars are
-    a known gap — see decision issue #14). Providers should expose
-    ``supported_timeframes`` so callers can fail fast.
-    """
-
-    S1 = "S1"
-    S10 = "S10"
-    M1 = "M1"
-    M5 = "M5"
-    D1 = "D1"
+__all__ = ["MarketDataProvider", "Timeframe"]
 
 
 @runtime_checkable

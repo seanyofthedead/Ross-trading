@@ -11,11 +11,16 @@ Pacing is per-subscription: the first event of each stream anchors
 that stream's wall-clock baseline. All streams started under the
 same provider session will therefore stay coherent with each other
 within one wall-clock anchor.
+
+``_read_lines`` accepts an optional date range so callers like
+:meth:`historical_bars` only open the files for the days they care
+about, avoiding a full archive scan per query.
 """
 
 from __future__ import annotations
 
 import gzip
+from datetime import date as _date_type
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -30,7 +35,7 @@ from ross_trading.data._codec import (
     decode_quote,
     decode_tape,
 )
-from ross_trading.data.market_feed import Timeframe
+from ross_trading.data.types import Timeframe
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -83,9 +88,7 @@ class ReplayProvider:
         wanted = {s.upper() for s in symbols}
         anchor = _Anchor()
         for line in self._read_lines(EventType.QUOTE):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.QUOTE:
-                continue
+            _, payload = decode_envelope(line)
             quote = decode_quote(payload)
             if quote.symbol.upper() not in wanted:
                 continue
@@ -100,9 +103,7 @@ class ReplayProvider:
         wanted = {s.upper() for s in symbols}
         anchor = _Anchor()
         for line in self._read_lines(EventType.BAR):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.BAR:
-                continue
+            _, payload = decode_envelope(line)
             bar = decode_bar(payload)
             if bar.symbol.upper() not in wanted or bar.timeframe != timeframe.value:
                 continue
@@ -113,9 +114,7 @@ class ReplayProvider:
         wanted = {s.upper() for s in symbols}
         anchor = _Anchor()
         for line in self._read_lines(EventType.TAPE):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.TAPE:
-                continue
+            _, payload = decode_envelope(line)
             tape = decode_tape(payload)
             if tape.symbol.upper() not in wanted:
                 continue
@@ -131,10 +130,10 @@ class ReplayProvider:
     ) -> Sequence[Bar]:
         upper = symbol.upper()
         result: list[Bar] = []
-        for line in self._read_lines(EventType.BAR):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.BAR:
-                continue
+        for line in self._read_lines(
+            EventType.BAR, date_from=start.date(), date_to=end.date()
+        ):
+            _, payload = decode_envelope(line)
             bar = decode_bar(payload)
             if (
                 bar.symbol.upper() == upper
@@ -151,9 +150,7 @@ class ReplayProvider:
         wanted = None if symbols is None else {s.upper() for s in symbols}
         anchor = _Anchor()
         for line in self._read_lines(EventType.HEADLINE):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.HEADLINE:
-                continue
+            _, payload = decode_envelope(line)
             headline = decode_headline(payload)
             if wanted is not None and headline.ticker.upper() not in wanted:
                 continue
@@ -167,10 +164,8 @@ class ReplayProvider:
     ) -> Sequence[Headline]:
         upper = symbol.upper()
         result: list[Headline] = []
-        for line in self._read_lines(EventType.HEADLINE):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.HEADLINE:
-                continue
+        for line in self._read_lines(EventType.HEADLINE, date_from=since.date()):
+            _, payload = decode_envelope(line)
             headline = decode_headline(payload)
             if headline.ticker.upper() == upper and headline.ts >= since:
                 result.append(headline)
@@ -188,22 +183,35 @@ class ReplayProvider:
 
     def _load_float_records(self) -> None:
         for line in self._read_lines(EventType.FLOAT):
-            event_type, payload = decode_envelope(line)
-            if event_type != EventType.FLOAT:
-                continue
+            _, payload = decode_envelope(line)
             rec = decode_float(payload)
             self._float_records[(rec.ticker.upper(), rec.as_of)] = rec
 
-    def _read_lines(self, event_type: EventType) -> Iterable[str]:
+    def _read_lines(
+        self,
+        event_type: EventType,
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> Iterable[str]:
         if not self._dir.exists():
             return
         for day_dir in sorted(p for p in self._dir.iterdir() if p.is_dir()):
+            try:
+                day = _date_type.fromisoformat(day_dir.name)
+            except ValueError:
+                # Non-date directory (e.g. a backup folder); skip silently.
+                continue
+            if date_from is not None and day < date_from:
+                continue
+            if date_to is not None and day > date_to:
+                continue
             path = day_dir / f"{event_type.value}.jsonl.gz"
             if not path.exists():
                 continue
             with gzip.open(path, "rt", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
+                for raw in f:
+                    line = raw.strip()
                     if line:
                         yield line
 

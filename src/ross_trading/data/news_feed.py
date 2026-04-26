@@ -1,7 +1,10 @@
 """News provider interface and headline deduplication.
 
-The dedup window is sliding and clock-driven so replay is
-deterministic — see :class:`HeadlineDeduper`.
+The dedup window slides against the *event-time* of incoming
+headlines (``Headline.ts``), not wall-clock time. This is what makes
+replay deterministic — under fast-replay where no virtual time
+advances, expiry still works because the headline timestamps
+themselves carry the recorded session's progression.
 """
 
 from __future__ import annotations
@@ -9,8 +12,6 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-from ross_trading.core.clock import Clock, RealClock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -43,14 +44,14 @@ class NewsProvider(Protocol):
 class HeadlineDeduper:
     """Sliding-window deduper keyed on ``(source, normalized_title, ticker)``.
 
-    Independent of wall-clock time: callers must provide a :class:`Clock`
-    so replay produces the same dedup decisions as the live run.
+    Eviction compares ``headline.ts - window`` against stored
+    timestamps, so the deduper produces the same decisions live and
+    in fast-replay regardless of how the clock advances.
     """
 
     def __init__(
         self,
         window: timedelta = DEFAULT_DEDUP_WINDOW,
-        clock: Clock | None = None,
         max_entries: int = 100_000,
     ) -> None:
         if window <= timedelta(0):
@@ -60,7 +61,6 @@ class HeadlineDeduper:
             msg = "max_entries must be positive"
             raise ValueError(msg)
         self._window = window
-        self._clock: Clock = clock if clock is not None else RealClock()
         self._max_entries = max_entries
         self._seen: OrderedDict[tuple[str, str, str], datetime] = OrderedDict()
 
@@ -70,7 +70,7 @@ class HeadlineDeduper:
         Calling this *records* the headline as seen — call once per
         incoming headline.
         """
-        self._evict_expired()
+        self._evict_expired_against(headline.ts)
         key = headline.dedup_key
         if key in self._seen:
             self._seen.move_to_end(key)
@@ -81,8 +81,8 @@ class HeadlineDeduper:
             self._seen.popitem(last=False)
         return False
 
-    def _evict_expired(self) -> None:
-        cutoff = self._clock.now() - self._window
+    def _evict_expired_against(self, now: datetime) -> None:
+        cutoff = now - self._window
         while self._seen:
             oldest_key = next(iter(self._seen))
             if self._seen[oldest_key] < cutoff:

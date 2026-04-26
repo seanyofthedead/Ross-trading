@@ -25,6 +25,24 @@ class Side(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class Timeframe(StrEnum):
+    """Bar aggregation periods.
+
+    Not every provider supports every timeframe (10-second bars are a
+    known gap — see decision issue #14). Providers should expose
+    ``supported_timeframes`` so callers can fail fast.
+    """
+
+    S1 = "S1"
+    S10 = "S10"
+    M1 = "M1"
+    M5 = "M5"
+    D1 = "D1"
+
+
+_VALID_TIMEFRAMES: frozenset[str] = frozenset(t.value for t in Timeframe)
+
+
 @dataclass(frozen=True, slots=True)
 class Quote:
     """Top-of-book quote (NBBO)."""
@@ -58,6 +76,12 @@ class Bar:
 
     def __post_init__(self) -> None:
         _require_utc(self.ts, "Bar.ts")
+        if self.timeframe not in _VALID_TIMEFRAMES:
+            msg = (
+                f"Bar.timeframe must be a Timeframe value "
+                f"(one of {sorted(_VALID_TIMEFRAMES)}), got {self.timeframe!r}"
+            )
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
