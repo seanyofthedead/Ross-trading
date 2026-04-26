@@ -15,11 +15,16 @@ dist/
 !.env.example
 
 # Trading data + runtime artifacts
-data/
+/data/
+/recordings/
 logs/
 *.log
 *.csv
 *.parquet
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # OS
 .DS_Store
