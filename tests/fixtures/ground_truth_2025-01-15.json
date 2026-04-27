@@ -1,0 +1,13 @@
+[
+  {
+    "ticker": "MSTR",
+    "direction": "long",
+    "time_called_out": "09:32",
+    "notes": "Gap and go on high volume, pre-market high break"
+  },
+  {
+    "ticker": "NVDA",
+    "direction": "long",
+    "notes": "Micro pullback entry, no time recorded"
+  }
+]
