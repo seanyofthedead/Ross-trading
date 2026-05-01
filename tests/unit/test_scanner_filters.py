@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from ross_trading.data.types import Bar, FloatRecord
+from ross_trading.data.types import Bar, FloatRecord, Headline
 from ross_trading.scanner.filters import (
     float_le,
+    headline_count,
+    news_present,
     pct_change_ge,
     price_in_band,
     rel_volume_ge,
@@ -152,3 +154,111 @@ def test_float_le_boundaries(shares: int, threshold: int, expected: bool) -> Non
 
 def test_float_le_missing_record_is_false() -> None:
     assert float_le(None) is False
+
+
+# -------------------------------------------------------- news_present / count
+
+
+def _h(
+    *,
+    title: str = "AVTX up on FDA approval",
+    source: str = "Benzinga",
+    ticker: str = "AVTX",
+    ts: datetime | None = None,
+) -> Headline:
+    return Headline(ticker=ticker, ts=ts or T0, source=source, title=title)
+
+
+def test_news_present_empty_is_false() -> None:
+    assert news_present("AVTX", [], anchor_ts=T0) is False
+    assert headline_count("AVTX", [], anchor_ts=T0) == 0
+
+
+def test_news_present_within_window_is_true() -> None:
+    headlines = [_h(ts=T0 - timedelta(hours=1))]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is True
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+
+
+def test_news_present_at_exact_window_edge_is_inclusive() -> None:
+    """24h ago exactly is still in the window."""
+    headlines = [_h(ts=T0 - timedelta(hours=24))]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is True
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+
+
+def test_news_present_at_exact_anchor_is_inclusive() -> None:
+    """A headline timestamped at anchor_ts itself is included."""
+    headlines = [_h(ts=T0)]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is True
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+
+
+def test_news_present_outside_window_is_false() -> None:
+    headlines = [_h(ts=T0 - timedelta(hours=24, seconds=1))]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is False
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 0
+
+
+def test_news_present_future_headlines_excluded() -> None:
+    """Strictly look backward from anchor_ts. A headline with ts > anchor_ts is ignored."""
+    headlines = [_h(ts=T0 + timedelta(seconds=1))]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is False
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 0
+
+
+def test_news_present_wrong_ticker_excluded() -> None:
+    headlines = [_h(ticker="OTHER", ts=T0 - timedelta(hours=1))]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is False
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 0
+
+
+def test_news_present_lowercase_ticker_query_matches() -> None:
+    """Casing must not matter — Headline.dedup_key already upper-cases."""
+    headlines = [_h(ticker="avtx", ts=T0 - timedelta(hours=1))]
+    assert news_present("AVTX", headlines, anchor_ts=T0) is True
+    assert news_present("avtx", headlines, anchor_ts=T0) is True
+
+
+def test_headline_count_dedup_same_source_same_title() -> None:
+    """Same (source, normalized_title, ticker) twice should count as 1."""
+    headlines = [
+        _h(source="Benzinga", title="AVTX up on FDA approval", ts=T0 - timedelta(hours=2)),
+        _h(source="Benzinga", title="AVTX up on FDA approval", ts=T0 - timedelta(hours=1)),
+    ]
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+
+
+def test_headline_count_distinct_sources_not_deduped() -> None:
+    """dedup_key includes source — Benzinga + Polygon are two distinct entries."""
+    headlines = [
+        _h(source="Benzinga", title="AVTX up on FDA approval", ts=T0 - timedelta(hours=2)),
+        _h(source="Polygon",  title="AVTX up on FDA approval", ts=T0 - timedelta(hours=1)),
+    ]
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 2
+
+
+def test_headline_count_normalized_title_dedupes() -> None:
+    """HeadlineDeduper normalizes case + whitespace within the title."""
+    headlines = [
+        _h(source="Benzinga", title="AVTX up on FDA approval", ts=T0 - timedelta(hours=2)),
+        _h(source="Benzinga", title="  avtx UP  ON  fda APPROVAL ",
+           ts=T0 - timedelta(hours=1)),
+    ]
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+
+
+def test_headline_count_uses_fresh_deduper_per_call() -> None:
+    """Two consecutive calls with the same headlines must each return 1."""
+    headlines = [_h(ts=T0 - timedelta(hours=1))]
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+    assert headline_count("AVTX", headlines, anchor_ts=T0) == 1
+
+
+def test_headline_count_custom_lookback_uses_matching_dedup_window() -> None:
+    """If lookback_hours=2, the deduper window is also 2h."""
+    headlines = [
+        _h(source="Benzinga", title="story A", ts=T0 - timedelta(hours=3)),
+        _h(source="Benzinga", title="story B", ts=T0 - timedelta(minutes=30)),
+    ]
+    assert headline_count("AVTX", headlines, anchor_ts=T0, lookback_hours=2) == 1

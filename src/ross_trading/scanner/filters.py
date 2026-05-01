@@ -7,11 +7,17 @@ the scanner can A/B test them later without surgery here.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from ross_trading.data.news_feed import HeadlineDeduper
+
 if TYPE_CHECKING:
-    from ross_trading.data.types import Bar, FloatRecord
+    from collections.abc import Sequence
+    from datetime import datetime
+
+    from ross_trading.data.types import Bar, FloatRecord, Headline
 
 
 def rel_volume_ge(
@@ -90,3 +96,64 @@ def float_le(
     if record is None:
         return False
     return record.float_shares <= threshold
+
+
+def _within_lookback(
+    ticker: str,
+    headlines: Sequence[Headline],
+    anchor_ts: datetime,
+    lookback_hours: int,
+) -> list[Headline]:
+    """Return headlines for ``ticker`` with ``ts`` in
+    ``[anchor_ts - lookback, anchor_ts]`` (inclusive both ends),
+    sorted by ``ts`` ascending.
+
+    Sorted ascending so ``HeadlineDeduper``'s OrderedDict eviction
+    sees timestamps in monotonic order — eviction keys off
+    ``headline.ts`` and assumes incoming events progress forward.
+    """
+    cutoff = anchor_ts - timedelta(hours=lookback_hours)
+    upper = ticker.upper()
+    matched = [
+        h for h in headlines
+        if h.ticker.upper() == upper and cutoff <= h.ts <= anchor_ts
+    ]
+    matched.sort(key=lambda h: h.ts)
+    return matched
+
+
+def news_present(
+    ticker: str,
+    headlines: Sequence[Headline],
+    anchor_ts: datetime,
+    lookback_hours: int = 24,
+) -> bool:
+    """True iff at least one ticker-matching headline falls in
+    ``[anchor_ts - lookback_hours, anchor_ts]``.
+
+    Anchor is the bar-open time, never ``datetime.now()`` — so live
+    and replay produce identical answers.
+    """
+    return headline_count(ticker, headlines, anchor_ts, lookback_hours) >= 1
+
+
+def headline_count(
+    ticker: str,
+    headlines: Sequence[Headline],
+    anchor_ts: datetime,
+    lookback_hours: int = 24,
+) -> int:
+    """Count distinct ticker-matching headlines after running them
+    through a fresh ``HeadlineDeduper`` with a window matching
+    ``lookback_hours``.
+
+    A fresh deduper is constructed each call so scanner ticks do not
+    leak state into each other.
+    """
+    window = timedelta(hours=lookback_hours)
+    deduper = HeadlineDeduper(window=window)
+    count = 0
+    for headline in _within_lookback(ticker, headlines, anchor_ts, lookback_hours):
+        if not deduper.is_duplicate(headline):
+            count += 1
+    return count
