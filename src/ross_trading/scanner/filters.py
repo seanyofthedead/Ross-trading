@@ -35,3 +35,28 @@ def rel_volume_ge(
         return False
     ratio = Decimal(snapshot.volume) / baseline_30d
     return ratio >= Decimal(str(threshold))
+
+
+def pct_change_ge(
+    current: Decimal,
+    reference: Decimal,
+    threshold_pct: Decimal,
+) -> bool:
+    """True iff ``(current - reference) / reference >= threshold_pct / 100``.
+
+    A pure two-price primitive — A1 stays ignorant of session
+    boundaries. The caller (A2) supplies the right pair: pass
+    ``current=quote.last, reference=prior_session_close`` for
+    gainer-% on the day; pass ``current=bar.close,
+    reference=bar.open`` for an intraday move check.
+
+    ``threshold_pct`` is in **percent units** (``Decimal("10")``
+    means 10%, not 0.10) so call sites read like the spec language
+    of "≥ +10%".
+
+    Returns ``False`` when ``reference == 0`` (avoid divide-by-zero).
+    """
+    if reference == 0:
+        return False
+    change = (current - reference) / reference
+    return change >= threshold_pct / Decimal(100)

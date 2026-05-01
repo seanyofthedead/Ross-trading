@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from ross_trading.data.types import Bar
-from ross_trading.scanner.filters import rel_volume_ge
+from ross_trading.scanner.filters import pct_change_ge, rel_volume_ge
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 
@@ -63,3 +63,31 @@ def test_rel_volume_ge_missing_baseline_is_false() -> None:
 
 def test_rel_volume_ge_zero_baseline_is_false() -> None:
     assert rel_volume_ge("AVTX", _bar(volume=10_000_000), Decimal("0")) is False
+
+
+# ----------------------------------------------------------------- pct_change_ge
+
+
+@pytest.mark.parametrize(
+    ("current", "reference", "threshold_pct", "expected"),
+    [
+        ("5.50", "5.00", "10",  True),    # exact +10%
+        ("5.501", "5.00", "10", True),    # just above
+        ("5.499", "5.00", "10", False),   # just below
+        ("10.00", "5.00", "10", True),    # well above
+        ("4.50", "5.00", "10",  False),   # negative move
+        ("5.50", "5.00", "5",   True),    # lower threshold passes
+        ("5.50", "5.00", "20",  False),   # higher threshold fails
+    ],
+)
+def test_pct_change_ge_boundaries(
+    current: str, reference: str, threshold_pct: str, expected: bool,
+) -> None:
+    assert pct_change_ge(
+        Decimal(current), Decimal(reference), Decimal(threshold_pct)
+    ) is expected
+
+
+def test_pct_change_ge_zero_reference_is_false() -> None:
+    """Avoid divide-by-zero — return False rather than raising."""
+    assert pct_change_ge(Decimal("1.00"), Decimal("0"), Decimal("10")) is False
