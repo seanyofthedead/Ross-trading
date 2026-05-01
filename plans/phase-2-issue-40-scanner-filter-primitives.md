@@ -174,19 +174,27 @@ git commit -m "feat(scanner): create scanner package skeleton (#40)"
 
 ---
 
+## Conventions (applies to all tasks)
+
+Three patterns surfaced during execution and codified here so later tasks don't rediscover them:
+
+- **Imports are incremental per task.** The test file's `datetime`, `ross_trading.data.types`, and `ross_trading.scanner.filters` import lines all grow alphabetically as each task needs new names. Task 7 verifies the consolidated final state. Rationale: every intermediate state stays lint-clean (no `F401` from premature imports, no `E402` from scattered mid-file imports), so each task's red→green cycle is genuinely self-contained.
+- **Do not add `# noqa` for ruff rules outside the project's `select` list.** `pyproject.toml` selects `["E", "F", "I", "B", "UP", "SIM", "RUF", "S", "PT", "TCH"]` — no `ARG`. A suppression like `# noqa: ARG001` will trip `RUF100` (unused noqa). Unused arguments are silently fine; just leave the parameter without a suppression.
+- **Use ASCII in comments and strings where it reads identically.** Ruff `RUF001`/`RUF002`/`RUF003` flag visually-ambiguous Unicode characters (e.g., `×` MULTIPLICATION SIGN vs `x` LATIN SMALL LETTER X). Prefer `5.0x` over `5.0×` in test labels.
+
 ## Import Evolution Pattern (applies to Tasks 2–6)
 
-Each task introduces exactly one function (or, for Task 6, the news pair) and the test file's `from ross_trading.scanner.filters import …` line evolves alphabetically as functions land. Concretely, the import line at the end of each task is:
+Each task introduces exactly one function (or, for Task 6, the news pair) plus any datetime/types names its tests need. The test file's three growth-bearing import lines evolve alphabetically as follows:
 
-| After Task | Import line |
-|---|---|
-| 2 | `from ross_trading.scanner.filters import rel_volume_ge` |
-| 3 | `from ross_trading.scanner.filters import pct_change_ge, rel_volume_ge` |
-| 4 | `from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge` |
-| 5 | `from ross_trading.scanner.filters import float_le, pct_change_ge, price_in_band, rel_volume_ge` |
-| 6 | `from ross_trading.scanner.filters import (float_le, headline_count, news_present, pct_change_ge, price_in_band, rel_volume_ge)` (parenthesized once it grows past one line) |
+| After Task | `datetime` | `data.types` | `scanner.filters` |
+|---|---|---|---|
+| 2 | `UTC, datetime` | `Bar` | `rel_volume_ge` |
+| 3 | `UTC, datetime` | `Bar` | `pct_change_ge, rel_volume_ge` |
+| 4 | `UTC, datetime` | `Bar` | `pct_change_ge, price_in_band, rel_volume_ge` |
+| 5 | `UTC, date, datetime` | `Bar, FloatRecord` | `float_le, pct_change_ge, price_in_band, rel_volume_ge` |
+| 6 | `UTC, date, datetime, timedelta` | `Bar, FloatRecord, Headline` | `float_le, headline_count, news_present, pct_change_ge, price_in_band, rel_volume_ge` (parenthesized once it grows past one line) |
 
-This keeps every intermediate state lint-clean — no scattered mid-file imports that would trip ruff `E402`/`I001`. Task 7 then verifies the final block is a single alphabetized line.
+Task 7 then verifies all three blocks are single alphabetized lines (parenthesized when needed) — no drift, no mid-file imports.
 
 ---
 
@@ -197,7 +205,7 @@ This keeps every intermediate state lint-clean — no scattered mid-file imports
 
 - [ ] **Step 1: Write the test file scaffold + first failing test**
 
-The import line is exactly `from ross_trading.scanner.filters import rel_volume_ge` — only this one name. Other functions arrive in later tasks.
+Imports are minimal — only what Task 2's tests reference. `date`, `timedelta`, `FloatRecord`, `Headline` arrive in later tasks via the Import Evolution Pattern above.
 
 
 ```python
@@ -205,12 +213,12 @@ The import line is exactly `from ross_trading.scanner.filters import rel_volume_
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from ross_trading.data.types import Bar, FloatRecord, Headline
+from ross_trading.data.types import Bar
 from ross_trading.scanner.filters import rel_volume_ge
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
@@ -244,7 +252,7 @@ def _bar(
 @pytest.mark.parametrize(
     ("today_volume", "baseline", "threshold", "expected"),
     [
-        (5_000_000, Decimal("1_000_000"), 5.0, True),   # exact 5.0×
+        (5_000_000, Decimal("1_000_000"), 5.0, True),   # exact 5.0x
         (5_000_001, Decimal("1_000_000"), 5.0, True),   # just above
         (4_999_999, Decimal("1_000_000"), 5.0, False),  # just below
         (10_000_000, Decimal("1_000_000"), 5.0, True),  # well above
@@ -299,12 +307,17 @@ if TYPE_CHECKING:
 
 
 def rel_volume_ge(
-    symbol: str,  # noqa: ARG001 — kept for signature symmetry across filters
+    symbol: str,
     snapshot: Bar,
     baseline_30d: Decimal | None,
     threshold: float = 5.0,
 ) -> bool:
     """True iff ``snapshot.volume / baseline_30d >= threshold``.
+
+    ``symbol`` documents per-symbol intent (matches issue #40's
+    signature) but is not used in the body — the relevant volume is
+    already on ``snapshot``. The project's ruff config does not
+    enable ``ARG``, so no suppression is needed.
 
     Returns ``False`` when ``baseline_30d`` is ``None`` or zero — both
     mean "we don't have enough history to evaluate", and absence of
@@ -486,12 +499,16 @@ Expected: 9 failures with `ImportError: cannot import name 'price_in_band'`.
 
 ```python
 def price_in_band(
-    symbol: str,  # noqa: ARG001
+    symbol: str,
     snapshot: Bar,
     low: Decimal = Decimal("1"),
     high: Decimal = Decimal("20"),
 ) -> bool:
-    """True iff ``low <= snapshot.close <= high`` (inclusive both ends)."""
+    """True iff ``low <= snapshot.close <= high`` (inclusive both ends).
+
+    ``symbol`` is unused (kept for issue-spec parity); see notes on
+    ``rel_volume_ge`` for the no-suppression-needed reasoning.
+    """
     return low <= snapshot.close <= high
 ```
 
@@ -515,17 +532,23 @@ git commit -m "feat(scanner): price_in_band primitive (#40)"
 - Modify: `tests/unit/test_scanner_filters.py` (edit import line + append tests)
 - Modify: `src/ross_trading/scanner/filters.py` (append)
 
-- [ ] **Step 1: Update the import line, then append the failing tests**
+- [ ] **Step 1: Update the import lines, then append the failing tests**
 
-Edit the existing import line at the top of the test file from:
+Three import lines change in this task. Edit the test file's top so:
 
 ```python
+from datetime import UTC, datetime
+…
+from ross_trading.data.types import Bar
 from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge
 ```
 
-to:
+becomes:
 
 ```python
+from datetime import UTC, date, datetime
+…
+from ross_trading.data.types import Bar, FloatRecord
 from ross_trading.scanner.filters import (
     float_le,
     pct_change_ge,
@@ -534,7 +557,7 @@ from ross_trading.scanner.filters import (
 )
 ```
 
-The line is parenthesized + multi-line once it grows past one screen-width-friendly fit, matching the existing `data/news_feed.py` import-style convention. Then append the new tests at the bottom of the file:
+The scanner-filters line is parenthesized + multi-line once it grows past one screen-width-friendly fit, matching the existing `data/news_feed.py` import-style convention. Then append the new tests at the bottom of the file:
 
 ```python
 # --------------------------------------------------------------------- float_le
@@ -613,11 +636,14 @@ These two share the same windowing + deduper logic, so we implement them togethe
 - Modify: `tests/unit/test_scanner_filters.py` (edit import line + append tests)
 - Modify: `src/ross_trading/scanner/filters.py` (append)
 
-- [ ] **Step 1: Update the import line, then append the failing tests**
+- [ ] **Step 1: Update the import lines, then append the failing tests**
 
-Edit the existing import line at the top of the test file from:
+Three import lines change in this task. Edit the test file's top so:
 
 ```python
+from datetime import UTC, date, datetime
+…
+from ross_trading.data.types import Bar, FloatRecord
 from ross_trading.scanner.filters import (
     float_le,
     pct_change_ge,
@@ -626,9 +652,12 @@ from ross_trading.scanner.filters import (
 )
 ```
 
-to:
+becomes:
 
 ```python
+from datetime import UTC, date, datetime, timedelta
+…
+from ross_trading.data.types import Bar, FloatRecord, Headline
 from ross_trading.scanner.filters import (
     float_le,
     headline_count,
@@ -835,13 +864,19 @@ git commit -m "feat(scanner): news_present and headline_count primitives (#40)"
 
 ### Task 7: Consolidate test-file imports (verification)
 
-The Import Evolution Pattern means the final state of the import block should already be a single alphabetized `from ross_trading.scanner.filters import (…)` line. This task is a defensive verification — catching any drift before the static-checks pass in Task 8.
+The Import Evolution Pattern means the final state of all three growth-bearing import blocks should already be single alphabetized lines. This task is a defensive verification — catching any drift before the static-checks pass in Task 8.
 
 - [ ] **Step 1: Inspect the import block at the top of `tests/unit/test_scanner_filters.py`**
 
-Expected final block:
+Expected final state:
 
 ```python
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+
+from ross_trading.data.types import Bar, FloatRecord, Headline
 from ross_trading.scanner.filters import (
     float_le,
     headline_count,
@@ -852,7 +887,7 @@ from ross_trading.scanner.filters import (
 )
 ```
 
-If the block matches: this task is a no-op, skip to Task 8.
+If all three growth-bearing lines (`datetime`, `data.types`, `scanner.filters`) match: this task is a no-op, skip to Task 8.
 
 - [ ] **Step 2: If the block drifted (multiple `from ross_trading.scanner.filters import …` lines, or names out of order):** consolidate to a single alphabetized parenthesized block as shown above.
 
