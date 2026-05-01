@@ -174,12 +174,31 @@ git commit -m "feat(scanner): create scanner package skeleton (#40)"
 
 ---
 
+## Import Evolution Pattern (applies to Tasks 2–6)
+
+Each task introduces exactly one function (or, for Task 6, the news pair) and the test file's `from ross_trading.scanner.filters import …` line evolves alphabetically as functions land. Concretely, the import line at the end of each task is:
+
+| After Task | Import line |
+|---|---|
+| 2 | `from ross_trading.scanner.filters import rel_volume_ge` |
+| 3 | `from ross_trading.scanner.filters import pct_change_ge, rel_volume_ge` |
+| 4 | `from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge` |
+| 5 | `from ross_trading.scanner.filters import float_le, pct_change_ge, price_in_band, rel_volume_ge` |
+| 6 | `from ross_trading.scanner.filters import (float_le, headline_count, news_present, pct_change_ge, price_in_band, rel_volume_ge)` (parenthesized once it grows past one line) |
+
+This keeps every intermediate state lint-clean — no scattered mid-file imports that would trip ruff `E402`/`I001`. Task 7 then verifies the final block is a single alphabetized line.
+
+---
+
 ### Task 2: `rel_volume_ge` — failing test first
 
 **Files:**
 - Test: `tests/unit/test_scanner_filters.py`
 
 - [ ] **Step 1: Write the test file scaffold + first failing test**
+
+The import line is exactly `from ross_trading.scanner.filters import rel_volume_ge` — only this one name. Other functions arrive in later tasks.
+
 
 ```python
 """Atom A1 — scanner filter primitives (issue #40)."""
@@ -192,14 +211,7 @@ from decimal import Decimal
 import pytest
 
 from ross_trading.data.types import Bar, FloatRecord, Headline
-from ross_trading.scanner.filters import (
-    float_le,
-    headline_count,
-    news_present,
-    pct_change_ge,
-    price_in_band,
-    rel_volume_ge,
-)
+from ross_trading.scanner.filters import rel_volume_ge
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 
@@ -321,10 +333,24 @@ git commit -m "feat(scanner): rel_volume_ge primitive (#40)"
 ### Task 3: `pct_change_ge`
 
 **Files:**
-- Modify: `tests/unit/test_scanner_filters.py` (append)
+- Modify: `tests/unit/test_scanner_filters.py` (edit import line + append tests)
 - Modify: `src/ross_trading/scanner/filters.py` (append)
 
-- [ ] **Step 1: Append the failing tests**
+- [ ] **Step 1: Update the import line, then append the failing tests**
+
+Edit the existing import line at the top of the test file from:
+
+```python
+from ross_trading.scanner.filters import rel_volume_ge
+```
+
+to:
+
+```python
+from ross_trading.scanner.filters import pct_change_ge, rel_volume_ge
+```
+
+Then append the new tests at the bottom of the file:
 
 ```python
 # ----------------------------------------------------------------- pct_change_ge
@@ -405,10 +431,24 @@ git commit -m "feat(scanner): pct_change_ge primitive (#40)"
 ### Task 4: `price_in_band`
 
 **Files:**
-- Modify: `tests/unit/test_scanner_filters.py` (append)
+- Modify: `tests/unit/test_scanner_filters.py` (edit import line + append tests)
 - Modify: `src/ross_trading/scanner/filters.py` (append)
 
-- [ ] **Step 1: Append the failing tests**
+- [ ] **Step 1: Update the import line, then append the failing tests**
+
+Edit the existing import line at the top of the test file from:
+
+```python
+from ross_trading.scanner.filters import pct_change_ge, rel_volume_ge
+```
+
+to:
+
+```python
+from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge
+```
+
+Then append the new tests at the bottom of the file:
 
 ```python
 # ----------------------------------------------------------------- price_in_band
@@ -472,10 +512,29 @@ git commit -m "feat(scanner): price_in_band primitive (#40)"
 ### Task 5: `float_le`
 
 **Files:**
-- Modify: `tests/unit/test_scanner_filters.py` (append)
+- Modify: `tests/unit/test_scanner_filters.py` (edit import line + append tests)
 - Modify: `src/ross_trading/scanner/filters.py` (append)
 
-- [ ] **Step 1: Append the failing tests**
+- [ ] **Step 1: Update the import line, then append the failing tests**
+
+Edit the existing import line at the top of the test file from:
+
+```python
+from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge
+```
+
+to:
+
+```python
+from ross_trading.scanner.filters import (
+    float_le,
+    pct_change_ge,
+    price_in_band,
+    rel_volume_ge,
+)
+```
+
+The line is parenthesized + multi-line once it grows past one screen-width-friendly fit, matching the existing `data/news_feed.py` import-style convention. Then append the new tests at the bottom of the file:
 
 ```python
 # --------------------------------------------------------------------- float_le
@@ -551,10 +610,36 @@ git commit -m "feat(scanner): float_le primitive (#40)"
 These two share the same windowing + deduper logic, so we implement them together with a shared private helper to avoid duplication.
 
 **Files:**
-- Modify: `tests/unit/test_scanner_filters.py` (append)
+- Modify: `tests/unit/test_scanner_filters.py` (edit import line + append tests)
 - Modify: `src/ross_trading/scanner/filters.py` (append)
 
-- [ ] **Step 1: Append the failing tests**
+- [ ] **Step 1: Update the import line, then append the failing tests**
+
+Edit the existing import line at the top of the test file from:
+
+```python
+from ross_trading.scanner.filters import (
+    float_le,
+    pct_change_ge,
+    price_in_band,
+    rel_volume_ge,
+)
+```
+
+to:
+
+```python
+from ross_trading.scanner.filters import (
+    float_le,
+    headline_count,
+    news_present,
+    pct_change_ge,
+    price_in_band,
+    rel_volume_ge,
+)
+```
+
+(Both `headline_count` and `news_present` arrive in this same task.) Then append the new tests at the bottom of the file:
 
 ```python
 # -------------------------------------------------------- news_present / count
@@ -748,7 +833,43 @@ git commit -m "feat(scanner): news_present and headline_count primitives (#40)"
 
 ---
 
-### Task 7: Static checks + full suite
+### Task 7: Consolidate test-file imports (verification)
+
+The Import Evolution Pattern means the final state of the import block should already be a single alphabetized `from ross_trading.scanner.filters import (…)` line. This task is a defensive verification — catching any drift before the static-checks pass in Task 8.
+
+- [ ] **Step 1: Inspect the import block at the top of `tests/unit/test_scanner_filters.py`**
+
+Expected final block:
+
+```python
+from ross_trading.scanner.filters import (
+    float_le,
+    headline_count,
+    news_present,
+    pct_change_ge,
+    price_in_band,
+    rel_volume_ge,
+)
+```
+
+If the block matches: this task is a no-op, skip to Task 8.
+
+- [ ] **Step 2: If the block drifted (multiple `from ross_trading.scanner.filters import …` lines, or names out of order):** consolidate to a single alphabetized parenthesized block as shown above.
+
+- [ ] **Step 3: Run `ruff check tests/unit/test_scanner_filters.py`**
+
+Expected: clean — no `E402`, no `I001`, no `F401`.
+
+- [ ] **Step 4: Commit only if Step 2 changed anything:**
+
+```bash
+git add tests/unit/test_scanner_filters.py
+git commit -m "chore(scanner): consolidate test-file imports (#40)"
+```
+
+---
+
+### Task 8: Static checks + full suite
 
 - [ ] **Step 1: Run ruff**
 
@@ -758,7 +879,7 @@ Expected: `All checks passed!`
 - [ ] **Step 2: Run mypy strict**
 
 Run: `mypy --strict src tests`
-Expected: `Success: no issues found in <N> source files`. (`<N>` will be 1 higher than Phase 1's 41 — namely 42 — once the new test file is counted; the new package init does not add a typed file because it's pure docstring.)
+Expected: `Success: no issues found in <N> source files` where `<N>` equals Phase 1's count plus the three new files (`scanner/__init__.py`, `scanner/filters.py`, `tests/unit/test_scanner_filters.py`). Verify the count is sensible rather than asserting an exact number — the Phase-1 baseline can drift between branches.
 
 - [ ] **Step 3: Run the full pytest suite**
 
@@ -767,7 +888,7 @@ Expected: every Phase-1 test still passes, plus the new `test_scanner_filters.py
 
 - [ ] **Step 4: If anything fails, fix and re-run; only proceed once all three are green.**
 
-- [ ] **Step 5: No new commit needed if Tasks 2–6 commits are clean.** If lint or mypy turned up something, the fix lands as a `chore` commit:
+- [ ] **Step 5: No new commit needed if Tasks 2–7 commits are clean.** If lint or mypy turned up something, the fix lands as a `chore` commit:
 
 ```bash
 git add -p
@@ -776,7 +897,7 @@ git commit -m "chore(scanner): satisfy ruff/mypy on filter primitives (#40)"
 
 ---
 
-### Task 8: Open the PR
+### Task 9: Open the PR
 
 - [ ] **Step 1: Push the branch**
 
