@@ -1,0 +1,37 @@
+"""Pure-function primitives for the Section 3.1 hard filters.
+
+Atom A1 of Phase 2 (#40, tracked under #3). No I/O, no logging, no
+module-level mutable state. Thresholds are passed as parameters so
+the scanner can A/B test them later without surgery here.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ross_trading.data.types import Bar
+
+
+def rel_volume_ge(
+    symbol: str,
+    snapshot: Bar,
+    baseline_30d: Decimal | None,
+    threshold: float = 5.0,
+) -> bool:
+    """True iff ``snapshot.volume / baseline_30d >= threshold``.
+
+    ``symbol`` documents per-symbol intent (matches issue #40's
+    signature) but is not used in the body — the relevant volume is
+    already on ``snapshot``. The project's ruff config does not
+    enable ``ARG``, so no suppression is needed.
+
+    Returns ``False`` when ``baseline_30d`` is ``None`` or zero — both
+    mean "we don't have enough history to evaluate", and absence of
+    evidence is not promotion.
+    """
+    if baseline_30d is None or baseline_30d == 0:
+        return False
+    ratio = Decimal(snapshot.volume) / baseline_30d
+    return ratio >= Decimal(str(threshold))
