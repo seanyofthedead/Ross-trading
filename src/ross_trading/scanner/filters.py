@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ross_trading.data.types import Bar
+    from ross_trading.data.types import Bar, FloatRecord
 
 
 def rel_volume_ge(
@@ -74,3 +74,19 @@ def price_in_band(
     ``rel_volume_ge`` for the no-suppression-needed reasoning.
     """
     return low <= snapshot.close <= high
+
+
+def float_le(
+    record: FloatRecord | None,
+    threshold: int = 20_000_000,
+) -> bool:
+    """True iff ``record.float_shares <= threshold``.
+
+    Returns ``False`` when ``record`` is ``None`` — absence of
+    evidence is not promotion. The default threshold is 20M shares
+    (Cameron's hard cap; ``<10M`` is the preferred soft target which
+    the ranker (A2) will weigh separately).
+    """
+    if record is None:
+        return False
+    return record.float_shares <= threshold

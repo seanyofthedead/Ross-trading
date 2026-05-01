@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
 
-from ross_trading.data.types import Bar
-from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge
+from ross_trading.data.types import Bar, FloatRecord
+from ross_trading.scanner.filters import (
+    float_le,
+    pct_change_ge,
+    price_in_band,
+    rel_volume_ge,
+)
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 
@@ -117,3 +122,33 @@ def test_price_in_band_custom_bounds() -> None:
     snapshot = _bar(close="50.00")
     assert price_in_band("AVTX", snapshot, low=Decimal("10"), high=Decimal("100")) is True
     assert price_in_band("AVTX", snapshot, low=Decimal("60"), high=Decimal("100")) is False
+
+
+# --------------------------------------------------------------------- float_le
+
+
+def _float(shares: int, ticker: str = "AVTX") -> FloatRecord:
+    return FloatRecord(
+        ticker=ticker,
+        as_of=date(2026, 4, 26),
+        float_shares=shares,
+        shares_outstanding=shares * 2,
+        source="test",
+    )
+
+
+@pytest.mark.parametrize(
+    ("shares", "threshold", "expected"),
+    [
+        (20_000_000, 20_000_000, True),   # exact
+        (19_999_999, 20_000_000, True),   # just below
+        (20_000_001, 20_000_000, False),  # just above
+        (5_000_000, 20_000_000, True),    # well below
+    ],
+)
+def test_float_le_boundaries(shares: int, threshold: int, expected: bool) -> None:
+    assert float_le(_float(shares), threshold) is expected
+
+
+def test_float_le_missing_record_is_false() -> None:
+    assert float_le(None) is False
