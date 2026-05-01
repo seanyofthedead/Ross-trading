@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from ross_trading.data.types import Bar
-from ross_trading.scanner.filters import pct_change_ge, rel_volume_ge
+from ross_trading.scanner.filters import pct_change_ge, price_in_band, rel_volume_ge
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 
@@ -91,3 +91,29 @@ def test_pct_change_ge_boundaries(
 def test_pct_change_ge_zero_reference_is_false() -> None:
     """Avoid divide-by-zero — return False rather than raising."""
     assert pct_change_ge(Decimal("1.00"), Decimal("0"), Decimal("10")) is False
+
+
+# ----------------------------------------------------------------- price_in_band
+
+
+@pytest.mark.parametrize(
+    ("close", "expected"),
+    [
+        ("1.00", True),    # exact low
+        ("0.99", False),   # just below low
+        ("1.01", True),    # just above low
+        ("19.99", True),   # just below high
+        ("20.00", True),   # exact high
+        ("20.01", False),  # just above high
+        ("5.50", True),    # mid-band
+    ],
+)
+def test_price_in_band_default_bounds(close: str, expected: bool) -> None:
+    snapshot = _bar(close=close)
+    assert price_in_band("AVTX", snapshot) is expected
+
+
+def test_price_in_band_custom_bounds() -> None:
+    snapshot = _bar(close="50.00")
+    assert price_in_band("AVTX", snapshot, low=Decimal("10"), high=Decimal("100")) is True
+    assert price_in_band("AVTX", snapshot, low=Decimal("60"), high=Decimal("100")) is False

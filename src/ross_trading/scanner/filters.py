@@ -60,3 +60,17 @@ def pct_change_ge(
         return False
     change = (current - reference) / reference
     return change >= threshold_pct / Decimal(100)
+
+
+def price_in_band(
+    symbol: str,
+    snapshot: Bar,
+    low: Decimal = Decimal("1"),
+    high: Decimal = Decimal("20"),
+) -> bool:
+    """True iff ``low <= snapshot.close <= high`` (inclusive both ends).
+
+    ``symbol`` is unused (kept for issue-spec parity); see notes on
+    ``rel_volume_ge`` for the no-suppression-needed reasoning.
+    """
+    return low <= snapshot.close <= high
