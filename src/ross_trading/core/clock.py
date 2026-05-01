@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from typing import Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 
 @runtime_checkable
@@ -85,3 +87,25 @@ class VirtualClock:
             raise ValueError(msg)
         self._now = target
         self._monotonic += delta
+
+
+_NY_TZ = ZoneInfo("America/New_York")
+_MARKET_OPEN = dt_time(7, 0)   # inclusive
+_MARKET_CLOSE = dt_time(11, 0)  # exclusive
+
+
+def is_market_hours(utc_dt: datetime) -> bool:
+    """True iff ``utc_dt`` falls in [07:00, 11:00) America/New_York on a weekday.
+
+    The window is wall-clock ET (matches Cameron's pre-market + first-hour
+    momentum window per #38). DST is handled by zoneinfo. Holidays are out
+    of scope -- the universe provider returns empty on those days, so
+    out-of-band gating here is unnecessary.
+    """
+    if utc_dt.tzinfo is None:
+        msg = "is_market_hours requires a tz-aware datetime"
+        raise ValueError(msg)
+    local = utc_dt.astimezone(_NY_TZ)
+    if local.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        return False
+    return _MARKET_OPEN <= local.time() < _MARKET_CLOSE
