@@ -10,14 +10,19 @@ alone is not enough -- the listener does the substantive work).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from ross_trading.journal.engine import (
     JOURNAL_CONNECT_ARGS,
     create_journal_engine,
 )
+from ross_trading.journal.models import Base, WatchlistEntry
 
 
 def test_connect_args_pin_immediate() -> None:
@@ -61,5 +66,39 @@ def test_begin_emits_immediate() -> None:
         with engine.begin() as conn:
             conn.exec_driver_sql("SELECT 1")
         assert "BEGIN IMMEDIATE" in statements
+    finally:
+        engine.dispose()
+
+
+def test_foreign_keys_pragma_enabled() -> None:
+    """``PRAGMA foreign_keys = ON`` is set on every new connection."""
+    engine = create_journal_engine("sqlite://")
+    try:
+        with engine.connect() as conn:
+            value = conn.exec_driver_sql("PRAGMA foreign_keys").scalar()
+        assert value == 1
+    finally:
+        engine.dispose()
+
+
+def test_foreign_keys_enforced_rejects_dangling_pick_id() -> None:
+    """The pragma is actually in effect: a dangling FK insert raises.
+
+    Without ``PRAGMA foreign_keys = ON`` SQLite would accept a
+    ``WatchlistEntry.pick_id`` referencing a non-existent ``picks.id`` row
+    silently. With the pragma on, the flush raises ``IntegrityError``.
+    """
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            entry = WatchlistEntry(
+                ticker="ABCD",
+                pick_id=999_999,  # no such Pick
+                added_at=datetime(2026, 5, 2, 14, 31, tzinfo=UTC),
+            )
+            session.add(entry)
+            with pytest.raises(IntegrityError):
+                session.flush()
     finally:
         engine.dispose()

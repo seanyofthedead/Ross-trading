@@ -107,6 +107,15 @@ def test_pick_rejects_naive_datetime(session: Session) -> None:
         session.flush()
 
 
+def test_pick_rejects_non_decimal_price(session: Session) -> None:
+    """``DecimalText`` refuses to silently coerce ``float`` to ``Decimal``."""
+    pick = _make_pick()
+    pick.price = 3.42  # type: ignore[assignment]  # float, not Decimal
+    session.add(pick)
+    with pytest.raises(StatementError, match="DecimalText requires Decimal"):
+        session.flush()
+
+
 def test_watchlist_entry_open_membership(session: Session) -> None:
     pick = _make_pick()
     session.add(pick)

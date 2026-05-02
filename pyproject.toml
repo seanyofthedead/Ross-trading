@@ -5,8 +5,8 @@ description = "Autonomous AI trading agent mimicking Ross Cameron's small-cap mo
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "sqlalchemy>=2",
-    "alembic",
+    "sqlalchemy>=2,<3",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]

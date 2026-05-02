@@ -1,34 +1,39 @@
 """Engine + session factory for the scanner journal.
 
-Configures the SQLite DBAPI for ``BEGIN IMMEDIATE`` semantics and enables
-WAL journaling on every new connection. SQLAlchemy 2.x manages
-transactions itself and overrides the pysqlite driver's
-``isolation_level`` at runtime, so the connect-arg alone is not enough
-to actually emit ``BEGIN IMMEDIATE`` -- a ``begin`` event listener does
-the substantive work; the connect-arg keeps the configuration
-discoverable to tooling that introspects DBAPI args.
+Configures the SQLite DBAPI for ``BEGIN IMMEDIATE`` semantics, enables
+WAL journaling, and turns on foreign-key enforcement on every new
+connection. SQLAlchemy 2.x manages transactions itself and overrides
+the pysqlite driver's ``isolation_level`` at runtime, so the connect-arg
+alone is not enough to actually emit ``BEGIN IMMEDIATE`` -- a ``begin``
+event listener does the substantive work; the connect-arg keeps the
+configuration discoverable to tooling that introspects DBAPI args.
+
+SQLite ships with foreign-key enforcement disabled by default, so a
+``connect`` event listener issues ``PRAGMA foreign_keys = ON`` per
+connection (alongside ``PRAGMA journal_mode=WAL``). Without it,
+``ScannerDecision.pick_id`` and ``WatchlistEntry.pick_id`` would happily
+accept dangling references.
 
 In-memory SQLite (``sqlite://`` or ``sqlite:///:memory:``) is detected
-and switched to ``StaticPool`` so a single connection is shared across
-the engine's lifetime. Without this, separate connections each see an
-independent in-memory database, which breaks tests that create the
-schema once and then query through the ORM.
+via :func:`sqlalchemy.make_url` and switched to ``StaticPool`` so a
+single connection is shared across the engine's lifetime. Without this,
+separate connections each see an independent in-memory database, which
+breaks tests that create the schema once and then query through the
+ORM.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
-JOURNAL_CONNECT_ARGS: Final[dict[str, str]] = {"isolation_level": "IMMEDIATE"}
-
-_IN_MEMORY_URLS: Final[frozenset[str]] = frozenset({"sqlite://", "sqlite:///:memory:"})
+JOURNAL_CONNECT_ARGS: Final[dict[str, Any]] = {"isolation_level": "IMMEDIATE"}
 
 
 def create_journal_engine(
@@ -37,7 +42,12 @@ def create_journal_engine(
     echo: bool = False,
 ) -> Engine:
     """Create a journal :class:`Engine` with WAL + IMMEDIATE configured."""
-    is_memory = url in _IN_MEMORY_URLS
+    parsed = make_url(url)
+    is_memory = parsed.get_backend_name() == "sqlite" and parsed.database in (
+        None,
+        "",
+        ":memory:",
+    )
     connect_args: dict[str, Any] = dict(JOURNAL_CONNECT_ARGS)
     kwargs: dict[str, Any] = {"echo": echo}
     if is_memory:
@@ -48,13 +58,14 @@ def create_journal_engine(
     engine = create_engine(url, **kwargs)
 
     @event.listens_for(engine, "connect")
-    def _enable_wal(
+    def _apply_pragmas(
         dbapi_connection: Any,
         _connection_record: Any,
     ) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys = ON")
         finally:
             cursor.close()
 

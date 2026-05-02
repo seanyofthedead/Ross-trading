@@ -103,8 +103,18 @@ def test_orm_inserts_persist_lowercase_enum_values_against_migration(
     raw column values back through ``exec_driver_sql`` to confirm the
     lowercase ``.value`` strings -- not the uppercase ``.name``s -- hit
     the database.
+
+    Wraps the inserts in a SAVEPOINT that is rolled back at the end so
+    the session-scoped ``migrated_engine`` fixture does not accumulate
+    state across tests. Raw reads happen *inside* the savepoint, before
+    rollback.
     """
-    with Session(migrated_engine) as session:
+    with (
+        migrated_engine.connect() as outer_conn,
+        outer_conn.begin(),
+        Session(bind=outer_conn) as session,
+        session.begin_nested() as nested,
+    ):
         picked = ScannerDecision(
             kind=DecisionKind.PICKED,
             decision_ts=datetime(2026, 5, 2, 14, 30, tzinfo=UTC),
@@ -117,24 +127,32 @@ def test_orm_inserts_persist_lowercase_enum_values_against_migration(
             rejection_reason=RejectionReason.REL_VOLUME,
         )
         session.add_all([picked, rejected])
-        session.commit()
+        session.flush()
         picked_id = picked.id
         rejected_id = rejected.id
 
-    with migrated_engine.connect() as conn:
-        picked_kind = conn.exec_driver_sql(
+        picked_kind = outer_conn.exec_driver_sql(
             "SELECT kind FROM scanner_decisions WHERE id = ?",
             (picked_id,),
         ).scalar_one()
-        rejected_kind = conn.exec_driver_sql(
+        rejected_kind = outer_conn.exec_driver_sql(
             "SELECT kind FROM scanner_decisions WHERE id = ?",
             (rejected_id,),
         ).scalar_one()
-        rejected_reason = conn.exec_driver_sql(
+        rejected_reason = outer_conn.exec_driver_sql(
             "SELECT rejection_reason FROM scanner_decisions WHERE id = ?",
             (rejected_id,),
         ).scalar_one()
 
+        nested.rollback()
+
     assert picked_kind == "picked"
     assert rejected_kind == "rejected"
     assert rejected_reason == "rel_volume"
+
+    # Cleanup invariant: nothing leaked into the session-scoped engine.
+    with migrated_engine.connect() as conn:
+        count = conn.exec_driver_sql(
+            "SELECT COUNT(*) FROM scanner_decisions",
+        ).scalar_one()
+    assert count == 0
