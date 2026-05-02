@@ -8,6 +8,7 @@ session-scoped fixture matches the ``HistoricalCache`` testing pattern.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 from ross_trading.journal.engine import create_journal_engine
 from ross_trading.journal.models import (
     DecisionKind,
+    Pick,
     RejectionReason,
     ScannerDecision,
 )
@@ -115,10 +117,26 @@ def test_orm_inserts_persist_lowercase_enum_values_against_migration(
         Session(bind=outer_conn) as session,
         session.begin_nested() as nested,
     ):
+        # Seed a real Pick so the picked decision satisfies the
+        # ``ck_scanner_decisions_picked_pick_id`` CHECK from migration 0002.
+        pick = Pick(
+            ticker="ABCD",
+            ts=datetime(2026, 5, 2, 14, 30, tzinfo=UTC),
+            rel_volume=Decimal("12.5"),
+            pct_change=Decimal("18.75"),
+            price=Decimal("3.42"),
+            float_shares=8_500_000,
+            news_present=True,
+            headline_count=4,
+            rank=1,
+        )
+        session.add(pick)
+        session.flush()
         picked = ScannerDecision(
             kind=DecisionKind.PICKED,
             decision_ts=datetime(2026, 5, 2, 14, 30, tzinfo=UTC),
             ticker="ABCD",
+            pick_id=pick.id,
         )
         rejected = ScannerDecision(
             kind=DecisionKind.REJECTED,
