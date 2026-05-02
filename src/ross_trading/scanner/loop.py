@@ -20,6 +20,7 @@ from ross_trading.scanner.decisions import ScannerDecision
 
 if TYPE_CHECKING:
     from ross_trading.core.clock import Clock
+    from ross_trading.data.types import FeedGap
     from ross_trading.data.universe import UniverseProvider
     from ross_trading.scanner.assembler import SnapshotAssembler
     from ross_trading.scanner.decisions import DecisionSink
@@ -94,3 +95,22 @@ class ScannerLoop:
                     gap_end=None,
                 )
             )
+
+    def on_feed_gap(self, gap: FeedGap) -> None:
+        """Receive a retrospective FeedGap and emit a feed_gap decision.
+
+        Wired by callers as ``ReconnectingProvider(upstream, on_gap=loop.on_feed_gap)``.
+        Sync because ReconnectingProvider's callback runs synchronously
+        inside its FeedDisconnected handler -- emit-and-return is correct.
+        """
+        self._sink.emit(
+            ScannerDecision(
+                kind="feed_gap",
+                decision_ts=self._clock.now(),
+                ticker=None,
+                pick=None,
+                reason=gap.reason,
+                gap_start=gap.start,
+                gap_end=gap.end,
+            )
+        )

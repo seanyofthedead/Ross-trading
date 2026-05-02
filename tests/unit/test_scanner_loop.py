@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from ross_trading.core.clock import VirtualClock
-from ross_trading.data.types import Bar, FloatRecord
+from ross_trading.data.types import Bar, FeedGap, FloatRecord
 from ross_trading.data.universe import CachedUniverseProvider
 from ross_trading.scanner.loop import ScannerLoop
 from ross_trading.scanner.scanner import Scanner
@@ -283,3 +283,49 @@ async def test_stale_feed_emitted_each_tick_no_dedup() -> None:
     )
     await _run_for_n_ticks(loop, n=2)
     assert [d.kind for d in sink.decisions] == ["stale_feed", "stale_feed"]
+
+
+# ------------------------------------------------------------------- feed_gap
+
+
+async def test_on_feed_gap_emits_feed_gap_decision() -> None:
+    loop, clock, sink, _ = _build_loop(start=INSIDE_TS, by_anchor={})
+    gap = FeedGap(
+        symbol=None,
+        start=INSIDE_TS - timedelta(seconds=30),
+        end=INSIDE_TS,
+        reason="upstream socket reset",
+    )
+    loop.on_feed_gap(gap)
+    assert len(sink.decisions) == 1
+    d = sink.decisions[0]
+    assert d.kind == "feed_gap"
+    assert d.ticker is None
+    assert d.pick is None
+    assert d.gap_start == gap.start
+    assert d.gap_end == gap.end
+    assert d.reason == "upstream socket reset"
+    assert d.decision_ts == clock.now()
+
+
+async def test_on_feed_gap_quote_time_duration_reflects_inputs() -> None:
+    """gap_end - gap_start is exactly the input window (no clock-time mixing)."""
+    loop, _, sink, _ = _build_loop(start=INSIDE_TS, by_anchor={})
+    gap_start = INSIDE_TS - timedelta(minutes=2)
+    gap_end = INSIDE_TS - timedelta(minutes=1)
+    loop.on_feed_gap(FeedGap(symbol=None, start=gap_start, end=gap_end, reason="x"))
+    d = sink.decisions[0]
+    assert d.gap_start is not None
+    assert d.gap_end is not None
+    assert d.gap_end - d.gap_start == timedelta(minutes=1)
+
+
+async def test_on_feed_gap_does_not_block_or_call_async_path() -> None:
+    """Sync entry point -- callable from inside ReconnectingProvider's
+    sync exception handler. The ts comes from clock.now(); no new tick
+    is forced.
+    """
+    loop, _, sink, assembler = _build_loop(start=INSIDE_TS, by_anchor={})
+    loop.on_feed_gap(FeedGap(symbol=None, start=INSIDE_TS, end=INSIDE_TS, reason="x"))
+    assert len(sink.decisions) == 1
+    assert assembler.calls == []  # no scan triggered
