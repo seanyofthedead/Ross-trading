@@ -27,6 +27,7 @@ from decimal import Decimal  # noqa: TC003 -- SA 2.x evals Mapped[Decimal] at ru
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Enum,
     ForeignKey,
     Index,
@@ -171,4 +172,28 @@ class ScannerDecision(Base):
     __table_args__ = (
         Index("ix_scanner_decisions_decision_ts", "decision_ts"),
         Index("ix_scanner_decisions_kind_ts", "kind", "decision_ts"),
+        # Kind -> field-population invariants. Mirrors migration 0002
+        # (P2 review item from #43 / PR #54). Declared here so
+        # ``Base.metadata.create_all`` -- used by unit tests -- produces
+        # the same schema as ``alembic upgrade head``.
+        CheckConstraint(
+            "(kind = 'picked') = (pick_id IS NOT NULL)",
+            name="ck_scanner_decisions_picked_pick_id",
+        ),
+        CheckConstraint(
+            "(kind = 'rejected') = (rejection_reason IS NOT NULL)",
+            name="ck_scanner_decisions_rejected_reason",
+        ),
+        CheckConstraint(
+            "(kind = 'feed_gap') = (gap_start IS NOT NULL)",
+            name="ck_scanner_decisions_feed_gap_start",
+        ),
+        CheckConstraint(
+            "(kind = 'feed_gap') = (gap_end IS NOT NULL)",
+            name="ck_scanner_decisions_feed_gap_end",
+        ),
+        CheckConstraint(
+            "kind IN ('stale_feed', 'feed_gap') OR ticker IS NOT NULL",
+            name="ck_scanner_decisions_ticker_required",
+        ),
     )
