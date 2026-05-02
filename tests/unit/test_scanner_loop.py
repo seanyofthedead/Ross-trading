@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -220,3 +220,66 @@ async def test_loop_uses_injected_clock_sleep_not_asyncio_sleep() -> None:
     await _run_for_n_ticks(loop, n=2)
     assert assembler.calls == [INSIDE_TS, INSIDE_TS.replace(second=2)]
     assert len(sink.decisions) == 2
+
+
+# ------------------------------------------------------------------ staleness
+
+
+async def test_pre_first_quote_does_not_suppress_scan() -> None:
+    """most_recent_quote_ts=None -> staleness check is skipped."""
+    snap = _snap("AVTX")
+    loop, _, sink, _ = _build_loop(
+        start=INSIDE_TS,
+        by_anchor={INSIDE_TS: ({"AVTX": snap}, None)},  # None = pre-first-quote
+    )
+    await _run_for_n_ticks(loop, n=1)
+    assert len(sink.decisions) == 1
+    assert sink.decisions[0].kind == "picked"
+
+
+async def test_stale_feed_suppresses_scan_and_emits_stale_decision() -> None:
+    """anchor_ts - most_recent_quote_ts > threshold -> emit stale_feed, skip scan."""
+    snap = _snap("AVTX")
+    stale_quote_ts = INSIDE_TS - timedelta(seconds=30)
+    loop, _, sink, _ = _build_loop(
+        start=INSIDE_TS,
+        by_anchor={INSIDE_TS: ({"AVTX": snap}, stale_quote_ts)},
+    )
+    await _run_for_n_ticks(loop, n=1)
+    assert len(sink.decisions) == 1
+    d = sink.decisions[0]
+    assert d.kind == "stale_feed"
+    assert d.ticker is None
+    assert d.pick is None
+    assert d.decision_ts == INSIDE_TS
+    assert d.reason is not None
+    assert "30." in d.reason  # human-readable seconds
+
+
+async def test_fresh_feed_within_threshold_runs_scan() -> None:
+    """anchor_ts - most_recent_quote_ts <= threshold -> normal scan."""
+    snap = _snap("AVTX")
+    fresh_quote_ts = INSIDE_TS - timedelta(seconds=2)  # <5s threshold
+    loop, _, sink, _ = _build_loop(
+        start=INSIDE_TS,
+        by_anchor={INSIDE_TS: ({"AVTX": snap}, fresh_quote_ts)},
+    )
+    await _run_for_n_ticks(loop, n=1)
+    assert len(sink.decisions) == 1
+    assert sink.decisions[0].kind == "picked"
+
+
+async def test_stale_feed_emitted_each_tick_no_dedup() -> None:
+    """A persistent stale feed yields one stale_feed per tick (no dedup)."""
+    snap = _snap("AVTX")
+    stale_quote_ts = INSIDE_TS - timedelta(minutes=5)
+    second_anchor = INSIDE_TS.replace(second=2)
+    loop, _, sink, _ = _build_loop(
+        start=INSIDE_TS,
+        by_anchor={
+            INSIDE_TS: ({"AVTX": snap}, stale_quote_ts),
+            second_anchor: ({"AVTX": snap}, stale_quote_ts),
+        },
+    )
+    await _run_for_n_ticks(loop, n=2)
+    assert [d.kind for d in sink.decisions] == ["stale_feed", "stale_feed"]

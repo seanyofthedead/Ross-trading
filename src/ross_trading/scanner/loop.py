@@ -65,8 +65,22 @@ class ScannerLoop:
         if not is_market_hours(anchor_ts):
             return
         universe = await self._universe_provider.list_symbols(anchor_ts.date())
-        snapshot, _most_recent_quote_ts = await self._assembler.assemble(universe, anchor_ts)
-        # Staleness self-check lands in Task 5; for now scan unconditionally.
+        snapshot, most_recent_quote_ts = await self._assembler.assemble(universe, anchor_ts)
+        if most_recent_quote_ts is not None:
+            staleness_s = (anchor_ts - most_recent_quote_ts).total_seconds()
+            if staleness_s > self._staleness_threshold_s:
+                self._sink.emit(
+                    ScannerDecision(
+                        kind="stale_feed",
+                        decision_ts=anchor_ts,
+                        ticker=None,
+                        pick=None,
+                        reason=f"feed stale by {staleness_s:.1f}s",
+                        gap_start=None,
+                        gap_end=None,
+                    )
+                )
+                return
         picks = self._scanner.scan(universe, snapshot)
         for pick in picks:
             self._sink.emit(
