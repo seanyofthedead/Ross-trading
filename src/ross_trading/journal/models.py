@@ -142,7 +142,12 @@ class ScannerDecision(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     kind: Mapped[DecisionKind] = mapped_column(
-        Enum(DecisionKind, name="decision_kind"), nullable=False,
+        Enum(
+            DecisionKind,
+            name="decision_kind",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
     )
     decision_ts: Mapped[datetime] = mapped_column(TzAwareUTC, nullable=False)
     ticker: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -153,7 +158,12 @@ class ScannerDecision(Base):
     gap_start: Mapped[datetime | None] = mapped_column(TzAwareUTC, nullable=True)
     gap_end: Mapped[datetime | None] = mapped_column(TzAwareUTC, nullable=True)
     rejection_reason: Mapped[RejectionReason | None] = mapped_column(
-        Enum(RejectionReason, name="rejection_reason"), nullable=True,
+        Enum(
+            RejectionReason,
+            name="rejection_reason",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=True,
     )
 
     pick: Mapped[Pick | None] = relationship(Pick)

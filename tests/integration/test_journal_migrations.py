@@ -7,6 +7,7 @@ session-scoped fixture matches the ``HistoricalCache`` testing pattern.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,8 +15,14 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
+from sqlalchemy.orm import Session
 
 from ross_trading.journal.engine import create_journal_engine
+from ross_trading.journal.models import (
+    DecisionKind,
+    RejectionReason,
+    ScannerDecision,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -78,3 +85,56 @@ def test_upgrade_head_then_downgrade_base() -> None:
             assert _EXPECTED_TABLES.isdisjoint(after_downgrade)
     finally:
         engine.dispose()
+
+
+def test_orm_inserts_persist_lowercase_enum_values_against_migration(
+    migrated_engine: Engine,
+) -> None:
+    """Regression: ORM must write enum ``.value`` strings, not ``.name``.
+
+    The migration declares ``decision_kind`` and ``rejection_reason`` as
+    lowercase literals (``picked``, ``rel_volume`` ...). Without
+    ``values_callable`` on the model's ``Enum`` columns SA persists the
+    member name (``PICKED``), which the migration's CHECK constraint
+    rejects at runtime.
+
+    Inserts a ``PICKED`` row and a ``REJECTED`` + ``REL_VOLUME`` row via
+    an ORM session bound to the alembic-migrated engine, then reads the
+    raw column values back through ``exec_driver_sql`` to confirm the
+    lowercase ``.value`` strings -- not the uppercase ``.name``s -- hit
+    the database.
+    """
+    with Session(migrated_engine) as session:
+        picked = ScannerDecision(
+            kind=DecisionKind.PICKED,
+            decision_ts=datetime(2026, 5, 2, 14, 30, tzinfo=UTC),
+            ticker="ABCD",
+        )
+        rejected = ScannerDecision(
+            kind=DecisionKind.REJECTED,
+            decision_ts=datetime(2026, 5, 2, 14, 31, tzinfo=UTC),
+            ticker="WXYZ",
+            rejection_reason=RejectionReason.REL_VOLUME,
+        )
+        session.add_all([picked, rejected])
+        session.commit()
+        picked_id = picked.id
+        rejected_id = rejected.id
+
+    with migrated_engine.connect() as conn:
+        picked_kind = conn.exec_driver_sql(
+            "SELECT kind FROM scanner_decisions WHERE id = ?",
+            (picked_id,),
+        ).scalar_one()
+        rejected_kind = conn.exec_driver_sql(
+            "SELECT kind FROM scanner_decisions WHERE id = ?",
+            (rejected_id,),
+        ).scalar_one()
+        rejected_reason = conn.exec_driver_sql(
+            "SELECT rejection_reason FROM scanner_decisions WHERE id = ?",
+            (rejected_id,),
+        ).scalar_one()
+
+    assert picked_kind == "picked"
+    assert rejected_kind == "rejected"
+    assert rejected_reason == "rel_volume"
