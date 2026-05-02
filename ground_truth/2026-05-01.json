@@ -1,0 +1,14 @@
+[
+  {
+    "ticker": "AVTX",
+    "direction": "long",
+    "time_called_out": "07:32",
+    "notes": "small float biotech, called as a clean long off the FDA catalyst on the morning recap"
+  },
+  {
+    "ticker": "MSTR",
+    "direction": "long",
+    "time_called_out": "09:35",
+    "notes": "premarket gapper traded long off the opening range; sized down for the higher-priced name"
+  }
+]
