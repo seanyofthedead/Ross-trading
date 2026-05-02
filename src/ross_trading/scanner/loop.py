@@ -102,6 +102,12 @@ class ScannerLoop:
         Wired by callers as ``ReconnectingProvider(upstream, on_gap=loop.on_feed_gap)``.
         Sync because ReconnectingProvider's callback runs synchronously
         inside its FeedDisconnected handler -- emit-and-return is correct.
+
+        Must be called from within the asyncio event-loop thread. The
+        event loop serializes ``_tick`` and this callback, so they cannot
+        race on ``self._sink``. If a future ReconnectingProvider moves
+        to threaded I/O, callers must marshal the call back to the loop
+        thread (e.g., ``loop.call_soon_threadsafe(loop_inst.on_feed_gap, gap)``).
         """
         self._sink.emit(
             ScannerDecision(

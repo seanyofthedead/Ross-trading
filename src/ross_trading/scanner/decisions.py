@@ -40,6 +40,17 @@ class ScannerDecision:
     gap_start: datetime | None
     gap_end: datetime | None
 
+    def __post_init__(self) -> None:
+        if self.decision_ts.tzinfo is None:
+            msg = "decision_ts must be tz-aware"
+            raise ValueError(msg)
+        if self.gap_start is not None and self.gap_start.tzinfo is None:
+            msg = "gap_start must be tz-aware"
+            raise ValueError(msg)
+        if self.gap_end is not None and self.gap_end.tzinfo is None:
+            msg = "gap_end must be tz-aware"
+            raise ValueError(msg)
+
 
 @runtime_checkable
 class DecisionSink(Protocol):

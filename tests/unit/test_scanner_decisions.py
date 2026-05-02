@@ -122,3 +122,46 @@ def test_fake_records_emit_calls_in_order() -> None:
     sink.emit(a)
     sink.emit(b)
     assert sink.decisions == [a, b]
+
+
+# --------------------------------------------------- tz-aware datetime validation
+
+
+def test_decision_rejects_naive_decision_ts() -> None:
+    """Tz-naive timestamps are a programming error; refuse rather than guess."""
+    with pytest.raises(ValueError, match="decision_ts must be tz-aware"):
+        ScannerDecision(
+            kind="stale_feed",
+            decision_ts=datetime(2026, 4, 26, 14, 30),  # naive
+            ticker=None,
+            pick=None,
+            reason="x",
+            gap_start=None,
+            gap_end=None,
+        )
+
+
+def test_decision_rejects_naive_gap_start() -> None:
+    with pytest.raises(ValueError, match="gap_start must be tz-aware"):
+        ScannerDecision(
+            kind="feed_gap",
+            decision_ts=T0,
+            ticker=None,
+            pick=None,
+            reason="x",
+            gap_start=datetime(2026, 4, 26, 14, 0),  # naive
+            gap_end=T0,
+        )
+
+
+def test_decision_rejects_naive_gap_end() -> None:
+    with pytest.raises(ValueError, match="gap_end must be tz-aware"):
+        ScannerDecision(
+            kind="feed_gap",
+            decision_ts=T0,
+            ticker=None,
+            pick=None,
+            reason="x",
+            gap_start=T0 - timedelta(seconds=30),
+            gap_end=datetime(2026, 4, 26, 14, 30),  # naive
+        )

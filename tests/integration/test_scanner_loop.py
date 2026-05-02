@@ -82,7 +82,15 @@ def _script_window(
 
 
 async def _drive_until(loop: ScannerLoop, clock: VirtualClock, until: datetime) -> None:
-    """Run the loop until clock.now() >= until, then cancel cleanly."""
+    """Run the loop until clock.now() >= ``until``, then cancel cleanly.
+
+    The driver and the loop alternate on the asyncio ready queue: each
+    ``clock.sleep`` inside the loop calls ``await asyncio.sleep(0)``,
+    which yields back here, and the busy-yield re-checks ``clock.now()``.
+    Correctness depends on CPython's ``_run_once`` draining ready
+    callbacks in FIFO order -- the same scheduling assumption documented
+    on the unit-test ``_run_for_n_ticks`` helper.
+    """
     task = asyncio.create_task(loop.run())
     while clock.now() < until:
         await asyncio.sleep(0)
@@ -231,6 +239,10 @@ async def test_steady_state_no_unbounded_growth() -> None:
         t = WINDOW_OPEN + timedelta(seconds=2 * i)
         script[t] = ({"AVTX": snap}, t)
     loop, clock, sink = _build(start=WINDOW_OPEN, script=script)
+    # Script has 100 anchors at seconds 0, 2, ..., 198. Driving to second 200
+    # ensures the 100th tick (at 198s) completes; the would-be 101st tick at
+    # 200s is unscripted and would KeyError, but the cancel fires first
+    # because clock.now() == 200 >= 200 after the 100th tick's sleep.
     await _drive_until(loop, clock, WINDOW_OPEN + timedelta(seconds=200))
     assert len(sink.decisions) == 100  # one picked per tick
     assert all(d.kind == "picked" for d in sink.decisions)
