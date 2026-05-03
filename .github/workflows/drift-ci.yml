@@ -148,6 +148,40 @@ jobs:
             echo "Baseline checks (lint, type, tests, migrations) ran above."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The Claude action self-skips on PRs that modify the drift workflow or
+      # prompt file (workflow-validation guard against secret abuse). When that
+      # happens, no drift-report.json is written. Detect that specific case and
+      # synthesize a "warning" report so the pipeline does not block bootstrap
+      # or maintenance changes to its own infrastructure. Any other missing-
+      # report cause still falls through to the helper's exit-2 path.
+      - name: Detect workflow self-modification skip
+        if: |
+          always()
+          && steps.gate.outputs.run_scan == 'true'
+          && hashFiles('drift-report.json') == ''
+          && github.event.pull_request.number != null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          changed="$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+            --jq '.[].filename' 2>/dev/null || true)"
+          if echo "$changed" | grep -qE '^\.github/(workflows/drift-ci\.yml|prompts/drift-pr-audit\.md)$'; then
+            cat > drift-report.json <<'JSON'
+          {
+            "overall_status": "warning",
+            "merge_blocking": false,
+            "findings": [],
+            "waiver_required": false,
+            "summary_markdown": "**Drift scan self-skipped.** This PR modifies `.github/workflows/drift-ci.yml` or `.github/prompts/drift-pr-audit.md`, so the Claude action's workflow-validation guard refused to run with repository secrets. Reviewers must read the diff manually and confirm no policy is being weakened. See `docs/drift-control.md` (§ Workflow self-modification)."
+          }
+          JSON
+            echo "wrote bootstrap-skip stub drift-report.json"
+          else
+            echo "drift-report.json missing and PR did not modify drift workflow files; helper will fail closed"
+          fi
+
       - name: Enforce drift findings
         if: always() && steps.gate.outputs.run_scan == 'true'
         env:

@@ -150,6 +150,22 @@ BLOCKER override requires a maintainer to either:
   rationale recorded in the PR. This is the only sanctioned path; do not
   edit the workflow file to bypass the check.
 
+## Workflow self-modification
+
+The Claude action used by the drift scan refuses to run with repository
+secrets when the PR modifies `.github/workflows/drift-ci.yml` or
+`.github/prompts/drift-pr-audit.md` — the workflow file in the PR must
+match the version on `main`, or the action self-skips as a security
+measure against secret abuse.
+
+When the pipeline detects this case it writes a synthetic "warning" drift
+report so the PR is not blocked by an infrastructure constraint that
+cannot be satisfied. **The audit did not actually run.** Reviewers of any
+PR that touches these two files must read the diff manually and confirm
+that no policy is being weakened (e.g., severity rules, waiver semantics,
+the prompt's evidence requirement). Treat it as you would a change to
+branch protection: small, visible, justified.
+
 ## See also
 
 - `docs/architecture.md` — the canonical product and architecture spec.
