@@ -1,0 +1,94 @@
+name: Drift follow-up
+description: Track a drift finding surfaced by the Drift CI pipeline
+title: "[drift] <short summary>"
+labels: ["drift"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for follow-up work created from a Drift CI finding.
+        See `docs/drift-control.md` for severity definitions and the waiver
+        process.
+
+  - type: input
+    id: source_pr
+    attributes:
+      label: Source PR
+      description: PR number where the drift was detected (e.g., `#123`).
+      placeholder: "#123"
+    validations:
+      required: true
+
+  - type: input
+    id: drift_id
+    attributes:
+      label: Drift finding ID
+      description: ID from `drift-report.json` (e.g., `DRIFT-002`).
+      placeholder: "DRIFT-002"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - BLOCKER
+        - HIGH
+        - MEDIUM
+        - LOW
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Product
+        - Architecture
+        - Code
+        - UX
+        - Testing
+        - Documentation
+        - Security
+        - Dependency
+        - Performance
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: File paths, line ranges, or other artifacts that demonstrate the drift.
+      placeholder: |
+        - src/ross_trading/scanner/scanner.py:120-140
+        - docs/architecture.md §3.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this is drift
+      description: Reference the ground-truth artifact (architecture doc, Resolved Decision, plan, etc.) that the PR diverges from.
+    validations:
+      required: true
+
+  - type: textarea
+    id: required_correction
+    attributes:
+      label: Required correction
+      description: What must change to resolve the drift. Describe the change, not the code.
+    validations:
+      required: true
+
+  - type: input
+    id: waiver
+    attributes:
+      label: Waiver (if applicable)
+      description: If a `drift-waiver` was granted on the source PR, link the approver and the rationale.
+      placeholder: "Approved by @user — rationale: ..."
+    validations:
+      required: false
