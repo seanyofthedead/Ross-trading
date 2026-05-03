@@ -26,14 +26,16 @@ A 70% gate over N=1 is statistically meaningless. Do not interpret this number a
 
 ## Re-run procedure
 
+Per-day reports (`reports/YYYY-MM-DD.md`) are deterministic outputs of `python -m ross_trading.journal.report` and are git-ignored (`.gitignore: reports/[0-9]*.md`). Only this summary file is tracked. Regenerate locally:
+
 ```bash
 # 1. Confirm ground_truth/ has ≥10 days and tests pass.
 pytest tests/integration/test_ground_truth_files.py
 
-# 2. Confirm the scanner journal has Pick rows for each curated day.
-#    (alembic upgrade head; populate via ScannerLoop or a back-test driver.)
+# 2. Populate the scanner journal for those days via the replay driver (#74).
+python -m ross_trading.scanner.replay --from YYYY-MM-DD --to YYYY-MM-DD
 
-# 3. Re-generate per-day reports.
+# 3. Generate per-day reports (local-only; not committed).
 for f in ground_truth/*.json; do
   day="${f##*/}"; day="${day%.json}"
   python -m ross_trading.journal.report --date "$day"

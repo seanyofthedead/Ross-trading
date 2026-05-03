@@ -26,6 +26,10 @@ logs/
 *.sqlite-wal
 *.sqlite-shm
 
+# Per-day report files are deterministic outputs of `journal.report`; only
+# the durable summary is tracked. Re-generate per-day files locally.
+reports/[0-9]*.md
+
 # OS
 .DS_Store
 Thumbs.db

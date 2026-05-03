@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, `decimal.Decimal` arithmetic, `datetime` UTC timestamps, raw `sqlite3` reads via the existing `data/cache.py` interface (no new SQLAlchemy surface — daily EMAs live in the analytic cache, per the SQLAlchemy / sqlite3 split documented in `journal/__init__.py`), mypy `--strict`, ruff, pytest.
 
-**Issue:** PENDING — file once this plan is reviewed; current placeholder uses `XX` in the filename. Tracks under [#4](https://github.com/seanyofthedead/Ross-trading/issues/4) (Phase 3 phase tracker). Update this section and the filename together when the issue lands.
+**Issue:** [#72](https://github.com/seanyofthedead/Ross-trading/issues/72) — tracks under [#4](https://github.com/seanyofthedead/Ross-trading/issues/4) (Phase 3 phase tracker). Follow-up atom (breakout / turnaround flags) tracked separately as [#73](https://github.com/seanyofthedead/Ross-trading/issues/73).
 
 **Decisions resolved:**
 
@@ -100,4 +100,4 @@ No integration test in this atom — the scanner-side wiring atom owns end-to-en
 - [ ] 7. Verify `mypy src tests` passes (strict).
 - [ ] 8. Verify `pytest -m "not integration"` passes.
 - [ ] 9. Verify CI is green on the feature branch.
-- [ ] 10. Open the GH issue and rename this plan from `phase-3-issue-XX-...` to the assigned number.
+- [ ] 10. Open the breakout / turnaround follow-up atom (#73) once A1 lands.
