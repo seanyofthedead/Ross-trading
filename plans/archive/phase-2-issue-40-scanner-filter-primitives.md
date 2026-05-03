@@ -1,3 +1,5 @@
+> Status: merged in PR #48 (commit 61eb4a1)
+
 # Phase 2 — A1: Scanner Filter Primitives Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

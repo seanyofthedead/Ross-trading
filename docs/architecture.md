@@ -102,16 +102,25 @@ The Risk Supervisor sits above everything and can pre-empt any service. The Mark
 |Relative volume (today vs 30-day avg)|≥ 5×                                                        |Stock Selection #1               |
 |% change today                       |≥ +10%                                                      |Stock Selection #2               |
 |Price                                |$1.00 – $20.00 (preferred $5–$10 per Trading Plan)          |Stock Selection #4, Trading Plan |
-|Float                                |< 10M shares preferred, ≤ 20M acceptable, ≤ 50M for Gap & Go|Stock Selection #5, TA Series p.4|
-|News catalyst present                |True (preferred, not strict)                                |Stock Selection #3               |
+|Float                                |≤ 20M shares (hard cap; tiered weight in ranker — see below)|Stock Selection #5, TA Series p.4|
 
-**Output:** ranked list, sorted by % gain. Top N (N = 5) become the watchlist candidates. Refresh every 1–2 seconds during the 7:00–11:00 AM ET window (the Trading Plan’s defined trading hours).
+**Float tiering.** Float is gated as a hard ≤ 20M cap *and* weighted in the ranker. Tiers (implemented in `scanner/ranking.py::float_tier_weight`):
+
+* `< 10M` — *preferred* (weight 2). Surfaces above acceptable peers at equal % change.
+* `10M – 20M` — *acceptable* (weight 1). Default tier; passes the hard cap.
+* `> 20M` — *Gap-and-Go-only* (weight 0). Outside the scanner's 20M hard cap today; the band exists so the policy is uniform when Phase-3 Gap-and-Go pattern detection raises the cap to 50M.
+
+Sort key in the ranker is `(-pct_change, -float_tier_weight, ticker)`. See "Resolved Decisions" appendix → ISSUE-008 for the rationale.
+
+**News catalyst** is a *soft signal* (recorded on every pick, not a hard filter). The scanner does not gate on news presence; the catalyst classifier (§3.2) is the gate, downstream of the scanner. See "Resolved Decisions" appendix → D5/#39.
+
+**Output:** ranked list, sorted by `(-pct_change, -float_tier_weight, ticker)`. Top N (N = 5) become the watchlist candidates. Refresh every 1–2 seconds during the 7:00–11:00 AM ET window (the Trading Plan’s defined trading hours).
 
 **Implementation note:** Cameron uses his proprietary “Top Gainers” scanner. The agent should reproduce its semantics, not the UI. A polygon.io / Alpaca / IBKR data feed plus a rolling 30-day SMA of daily volume gives you the relative volume metric. Float is harder — pull from a paid reference dataset (Benzinga, Polygon reference, or scrape from broker fundamentals). Cache and refresh daily.
 
 ### 3.2 Catalyst Classifier
 
-The cleanest opportunity for an LLM in this pipeline. For each scanner hit, fetch the top news headlines from the last 24h and classify:
+The cleanest opportunity for an LLM in this pipeline. For each scanner hit, fetch the top news headlines from the last 24h and classify. **Catalyst-based rejection (`is_real == false`, `is_dilutive == true`, `REVERSE_SPLIT`, non-bullish sentiment) lives at this stage — not in the scanner.** The scanner records `news_present` and `headline_count` as soft signals on every pick (per D5/#39); the classifier is the actual gate downstream.
 
 **Schema:**
 
@@ -442,7 +451,7 @@ async def position_management_loop():
 
 ## 7. Implementation Phases
 
-**Phase 0 — Data plumbing (2–4 weeks).** Real-time market data, news feed, scanner with all 5 hard filters, float reference data, broker API integration in paper mode.
+**Phase 0 — Data plumbing (2–4 weeks).** Real-time market data, news feed, scanner with the four hard filters (relative volume, % change, price band, float ≤ 20M; news is a soft signal — see §3.1), float reference data, broker API integration in paper mode.
 
 **Phase 1 — Scanner + journaling, no trades (4–6 weeks).** Run scanner live, log what it finds, manually review whether the watchlist matches what Cameron picks on his daily YouTube recap. Tune until alignment is strong.
 
@@ -473,3 +482,19 @@ async def position_management_loop():
 The agent design above is faithful to Cameron’s documented rules. The hardest thing to build in is not the pattern detector or the scanner — those are mechanical. It’s the *restraint*: the willingness to skip trades, halve risk, and shut down for the day. Those rules exist in Cameron’s documents because he’s seen what happens when traders break them. An agent that mechanically enforces them is, ironically, more disciplined than 99% of the humans who try this strategy. That discipline is the largest single source of edge the agent has.
 
 The strategy itself is high-variance, capacity-constrained, and structurally dependent on a market regime that may not persist. Build conservatively, paper-trade exhaustively, scale slowly, and treat any live deployment as an ongoing experiment with a hard kill switch.
+
+-----
+
+## Appendix: Resolved Decisions
+
+Each entry: ID, source, one-line rationale, and the ground-truth code/doc location.
+
+* **D5 / #39 — News catalyst is a soft signal, not a hard filter.** Scanner records `news_present` and `headline_count` on every pick but does not gate on them; rejection of dilutive / fluff catalysts lives at the catalyst classifier (§3.2). Rationale: the news feed has high recall but low precision at the headline level (re-listings, mis-tagged tickers, premarket spam) — gating early would discard tradeable setups before the LLM classifier can apply judgement. Code: `src/ross_trading/scanner/scanner.py::Scanner.scan` (no news predicate); `src/ross_trading/scanner/types.py::ScannerPick.news_present, headline_count`.
+
+* **ISSUE-008 — Tiered-float ranking weight.** The scanner enforces a hard `float ≤ 20M` cap; the ranker additionally weights `< 10M` (preferred) above `10M–20M` (acceptable) at equal % change. The `> 20M – ≤ 50M` Gap-and-Go band has weight 0 and is currently unreachable (hard-capped at 20M); it is reserved for Phase-3 Gap-and-Go pattern detection that may raise the cap. Rationale: preserves the architecture's tiered intent without changing the hard-filter surface; one place to evolve when Gap-and-Go ships. Code: `src/ross_trading/scanner/ranking.py::float_tier_weight, rank_picks`. Tests: `tests/unit/test_scanner_ranking.py::test_float_tier_weight_boundaries` and siblings.
+
+  * **Addendum — downstream-consumer ordering impact.** The ranker's sort key is `(-pct_change, -float_tier_weight, ticker)`. Callers that build `ScannerPick` instances directly with non-default `float_shares` (today: only the scanner itself; tomorrow: any back-test driver that constructs picks outside `Scanner.scan`) will see tier-weighted ordering when `pct_change` ties. This is intentional and matches the ranker's sole sorting policy; downstream consumers should not assume `pct_change`-only ordering.
+
+  * **Addendum — Gap-and-Go cap policy.** The 50M Gap-and-Go allowance is reserved as a *mode-parameterized cap on the existing `Scanner`*, not a forked second scanner. When Phase 3 Gap-and-Go pattern detection lands, `Scanner.__init__` will accept a `float_threshold` override (default `20_000_000`); Gap-and-Go-mode constructs `Scanner(float_threshold=50_000_000)`. This keeps one scanner code path, one ranker, and one set of tier weights. The `float_tier_weight=0` band exists today so the policy is uniform once that override ships.
+
+* **Indicators contract — hand-rolled `Decimal` semantics, not a TA-Lib dependency.** The phrase "TA-Lib parity" in earlier drafts meant *behavior parity*: indicators are hand-rolled with `Decimal` precision so live and replay produce bit-identical values. There is no plan to add a TA-Lib runtime dependency. Each indicator's docstring is its behavior contract (initialization, value type, boundary semantics); see `src/ross_trading/indicators/ema.py` for the canonical template. Code: `src/ross_trading/indicators/ema.py`.

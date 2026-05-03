@@ -1,3 +1,5 @@
+> Status: merged in PR #52 (commit e4e44ba)
+
 # Phase 2 -- A3: Async Tick Driver Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. The harness owner has asked to be paused after each task. Steps use checkbox (`- [ ]`) syntax for tracking.

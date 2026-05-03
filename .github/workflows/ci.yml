@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package + dev extras
+        run: pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check src tests
+
+      - name: Mypy (strict)
+        run: mypy src tests
+
+      - name: Pytest (unit)
+        run: pytest -m "not integration"
+
+      - name: Pytest (integration)
+        run: pytest -m integration
+
+      - name: Alembic upgrade head against a temp SQLite DB
+        run: alembic -x sqlalchemy.url=sqlite:///"$RUNNER_TEMP"/journal.sqlite upgrade head

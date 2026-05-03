@@ -20,4 +20,9 @@ inconsistency is intentional and documented at both sites:
 Do not "harmonize" the two without a concrete need -- the cost
 (complexity, runtime overhead, lost type safety on one side or the other)
 outweighs the win (one fewer dependency surface).
+
+Canonical default DB URL: ``sqlite:///journal.sqlite``. Both ``alembic.ini``
+and :mod:`ross_trading.journal.report` resolve to this path so an
+``alembic upgrade head`` followed by ``python -m ross_trading.journal.report``
+hits the same file. ``.gitignore`` already excludes ``*.sqlite``.
 """
