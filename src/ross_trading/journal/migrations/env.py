@@ -26,6 +26,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# Honor ``alembic -x sqlalchemy.url=...`` so CI can target a temp DB without
+# rewriting alembic.ini. ``x_arguments`` is the documented escape hatch.
+_x_args = context.get_x_argument(as_dictionary=True)
+if "sqlalchemy.url" in _x_args:
+    config.set_main_option("sqlalchemy.url", _x_args["sqlalchemy.url"])
+
 target_metadata = Base.metadata
 
 

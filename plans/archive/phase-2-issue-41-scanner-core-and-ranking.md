@@ -1,3 +1,5 @@
+> Status: merged in PR #50 (commit 41e7bfe)
+
 # Phase 2 — A2: Scanner Core and Ranking Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. The harness owner has asked to be paused after each task. Steps use checkbox (`- [ ]`) syntax for tracking.
