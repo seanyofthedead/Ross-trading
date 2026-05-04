@@ -6,6 +6,9 @@ Currently in Phase 2: scanner + journaling, no live trading.
 ## Status
 
 [![CI](https://github.com/seanyofthedead/Ross-trading/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/seanyofthedead/Ross-trading/actions/workflows/ci.yml)
+[![Drift CI](https://github.com/seanyofthedead/Ross-trading/actions/workflows/drift-ci.yml/badge.svg?branch=main)](https://github.com/seanyofthedead/Ross-trading/actions/workflows/drift-ci.yml)
+
+Pull requests are gated by [Drift CI](docs/drift-control.md): baseline checks (ruff, mypy, pytest, alembic) plus a Claude-powered drift audit that compares the diff against `docs/architecture.md`, `docs/ground_truth.md`, and the active `plans/`. See `docs/drift-control.md` for severity rules and the waiver process.
 
 ## Quickstart
 
