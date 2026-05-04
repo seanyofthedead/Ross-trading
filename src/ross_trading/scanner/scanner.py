@@ -1,6 +1,7 @@
 """Scanner orchestrator: composes A1 filter primitives + ranker.
 
-Phase 2 -- Atom A2 (#41). Pure-sync. No I/O, no logging, no
+Phase 2 -- Atom A2 (#41), extended in A8 (#51) with
+``scan_with_decisions``. Pure-sync. No I/O, no logging, no
 module-level mutable state. Thresholds are constructor parameters
 so the caller can A/B test without surgery here.
 
@@ -22,7 +23,7 @@ from ross_trading.scanner.filters import (
     rel_volume_ge,
 )
 from ross_trading.scanner.ranking import rank_picks
-from ross_trading.scanner.types import ScannerPick
+from ross_trading.scanner.types import ScannerPick, ScannerRejection, ScanResult
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -52,35 +53,81 @@ class Scanner:
         self._news_lookback_hours = news_lookback_hours
         self._top_n = top_n
 
+    def scan_with_decisions(
+        self,
+        universe: frozenset[str],
+        snapshot: Mapping[str, ScannerSnapshot],
+    ) -> ScanResult:
+        """Filter the universe by snapshot, ranking picks and recording
+        the *first* failing filter for each rejected ticker.
+
+        Universe members with no snapshot entry are silently skipped
+        -- universe drift between enumeration and snapshot assembly
+        is normal at the boundary of a session, and not a journal-
+        worthy event (see plan D-A8-5).
+
+        Filter evaluation order matches the AND-chain in the legacy
+        :meth:`scan` method (preserved for behavioral compatibility):
+        baseline presence, float-record presence, ``rel_volume_ge``,
+        ``pct_change_ge``, ``price_in_band``, ``float_le``. Returns
+        as soon as the first failing filter is identified.
+        """
+        candidates: list[ScannerPick] = []
+        rejections: list[ScannerRejection] = []
+        for ticker in universe:
+            snap = snapshot.get(ticker)
+            if snap is None:
+                continue
+            anchor_ts = snap.bar.ts
+            baseline = snap.baseline_30d
+            if baseline is None:
+                rejections.append(ScannerRejection(
+                    ticker=ticker, ts=anchor_ts, reason="missing_baseline",
+                ))
+                continue
+            float_rec = snap.float_record
+            if float_rec is None:
+                rejections.append(ScannerRejection(
+                    ticker=ticker, ts=anchor_ts, reason="missing_float",
+                ))
+                continue
+            if not rel_volume_ge(ticker, snap.bar, baseline, self._rel_volume_threshold):
+                rejections.append(ScannerRejection(
+                    ticker=ticker, ts=anchor_ts, reason="rel_volume",
+                ))
+                continue
+            if not pct_change_ge(snap.last, snap.prev_close, self._pct_change_threshold_pct):
+                rejections.append(ScannerRejection(
+                    ticker=ticker, ts=anchor_ts, reason="pct_change",
+                ))
+                continue
+            if not price_in_band(ticker, snap.bar, self._price_low, self._price_high):
+                rejections.append(ScannerRejection(
+                    ticker=ticker, ts=anchor_ts, reason="price_band",
+                ))
+                continue
+            if not float_le(float_rec, self._float_threshold):
+                rejections.append(ScannerRejection(
+                    ticker=ticker, ts=anchor_ts, reason="float_size",
+                ))
+                continue
+            candidates.append(self._build_pick(ticker, snap, baseline, float_rec))
+        return ScanResult(
+            picks=rank_picks(candidates, n=self._top_n),
+            rejections=rejections,
+        )
+
     def scan(
         self,
         universe: frozenset[str],
         snapshot: Mapping[str, ScannerSnapshot],
     ) -> list[ScannerPick]:
-        """Filter the universe by snapshot, then rank top-N.
+        """Return only the picks; thin wrapper over :meth:`scan_with_decisions`.
 
-        Universe members with no snapshot entry are silently skipped
-        -- universe drift between enumeration and snapshot assembly
-        is normal at the boundary of a session.
+        Preserved for callers that don't care about rejection journaling
+        (e.g., back-test drivers, ad-hoc scripts).
         """
-        candidates: list[ScannerPick] = []
-        for ticker in universe:
-            snap = snapshot.get(ticker)
-            if snap is None:
-                continue
-            baseline = snap.baseline_30d
-            float_rec = snap.float_record
-            if baseline is None or float_rec is None:
-                continue
-            if not (
-                rel_volume_ge(ticker, snap.bar, baseline, self._rel_volume_threshold)
-                and pct_change_ge(snap.last, snap.prev_close, self._pct_change_threshold_pct)
-                and price_in_band(ticker, snap.bar, self._price_low, self._price_high)
-                and float_le(float_rec, self._float_threshold)
-            ):
-                continue
-            candidates.append(self._build_pick(ticker, snap, baseline, float_rec))
-        return rank_picks(candidates, n=self._top_n)
+        return self.scan_with_decisions(universe, snapshot).picks
 
     def _build_pick(
         self,

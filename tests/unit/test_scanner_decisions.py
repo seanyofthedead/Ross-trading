@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import pickle
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from ross_trading.data.types import Bar, FloatRecord
 from ross_trading.scanner.decisions import DecisionSink, ScannerDecision
-from ross_trading.scanner.types import ScannerPick, ScannerRejection, ScanResult
+from ross_trading.scanner.scanner import Scanner
+from ross_trading.scanner.types import (
+    ScannerPick,
+    ScannerRejection,
+    ScannerSnapshot,
+    ScanResult,
+)
 from tests.fakes.decision_sink import FakeDecisionSink
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
@@ -223,3 +230,171 @@ def test_scan_result_empty_both_lists_ok() -> None:
     sr = ScanResult(picks=[], rejections=[])
     assert sr.picks == []
     assert sr.rejections == []
+
+
+# =============================================================================
+# Issue #51 -- Scanner.scan_with_decisions
+# =============================================================================
+
+S_T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
+
+
+def _passing_snap(
+    *,
+    symbol: str = "AVTX",
+    close: str = "5.50",
+    volume: int = 5_000_000,
+    last: str = "5.50",
+    prev_close: str = "5.00",
+    baseline_30d: Decimal | None = Decimal("1000000"),
+    float_shares: int | None = 8_500_000,
+) -> ScannerSnapshot:
+    bar = Bar(
+        symbol=symbol, ts=S_T0, timeframe="M1",
+        open=Decimal("5.00"), high=Decimal(close), low=Decimal("4.95"),
+        close=Decimal(close), volume=volume,
+    )
+    return ScannerSnapshot(
+        bar=bar,
+        last=Decimal(last),
+        prev_close=Decimal(prev_close),
+        baseline_30d=baseline_30d,
+        float_record=FloatRecord(
+            ticker=symbol, as_of=date(2026, 4, 26),
+            float_shares=float_shares, shares_outstanding=12_000_000,
+            source="test",
+        ) if float_shares is not None else None,
+        headlines=(),
+    )
+
+
+def test_scan_with_decisions_passing_ticker_yields_one_pick_no_rejections() -> None:
+    scanner = Scanner()
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]), {"AVTX": _passing_snap()},
+    )
+    assert len(result.picks) == 1
+    assert result.picks[0].ticker == "AVTX"
+    assert result.rejections == []
+
+
+def test_scan_with_decisions_universe_not_in_snapshot_is_silently_skipped() -> None:
+    """Per D-A8-5: not-in-snapshot is silent skip, NOT a NO_SNAPSHOT rejection."""
+    scanner = Scanner()
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX", "BBAI"]), {"AVTX": _passing_snap()},  # BBAI missing
+    )
+    assert [p.ticker for p in result.picks] == ["AVTX"]
+    assert result.rejections == []  # BBAI is NOT a rejection
+
+
+def test_scan_with_decisions_missing_baseline_rejects() -> None:
+    scanner = Scanner()
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]), {"AVTX": _passing_snap(baseline_30d=None)},
+    )
+    assert result.picks == []
+    assert len(result.rejections) == 1
+    assert result.rejections[0].reason == "missing_baseline"
+    assert result.rejections[0].ticker == "AVTX"
+
+
+def test_scan_with_decisions_missing_float_rejects() -> None:
+    scanner = Scanner()
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]), {"AVTX": _passing_snap(float_shares=None)},
+    )
+    assert result.picks == []
+    assert [r.reason for r in result.rejections] == ["missing_float"]
+
+
+def test_scan_with_decisions_rel_volume_rejects() -> None:
+    scanner = Scanner()  # default 5x
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]), {"AVTX": _passing_snap(volume=4_000_000)},
+    )
+    assert result.picks == []
+    assert [r.reason for r in result.rejections] == ["rel_volume"]
+
+
+def test_scan_with_decisions_pct_change_rejects() -> None:
+    scanner = Scanner()  # default 10%
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]),
+        {"AVTX": _passing_snap(last="5.40", prev_close="5.00")},  # +8%
+    )
+    assert result.picks == []
+    assert [r.reason for r in result.rejections] == ["pct_change"]
+
+
+def test_scan_with_decisions_price_band_rejects_high() -> None:
+    scanner = Scanner()  # default [1, 20]
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]),
+        {"AVTX": _passing_snap(close="25.00", last="25.50", prev_close="22.00")},
+    )
+    assert result.picks == []
+    assert [r.reason for r in result.rejections] == ["price_band"]
+
+
+def test_scan_with_decisions_float_size_rejects() -> None:
+    scanner = Scanner()  # default 20M
+    result = scanner.scan_with_decisions(
+        frozenset(["AVTX"]),
+        {"AVTX": _passing_snap(float_shares=25_000_000)},
+    )
+    assert result.picks == []
+    assert [r.reason for r in result.rejections] == ["float_size"]
+
+
+def test_scan_with_decisions_first_failure_wins_when_multiple_filters_fail() -> None:
+    """Snapshot fails BOTH rel_volume AND pct_change -- reason should be the
+    earlier one (rel_volume), preserving the AND-chain order."""
+    scanner = Scanner()
+    snap = _passing_snap(volume=4_000_000, last="5.40", prev_close="5.00")
+    result = scanner.scan_with_decisions(frozenset(["AVTX"]), {"AVTX": snap})
+    assert result.picks == []
+    assert [r.reason for r in result.rejections] == ["rel_volume"]  # not pct_change
+
+
+def test_scan_with_decisions_mixed_partition() -> None:
+    scanner = Scanner()
+    universe = frozenset(["GOOD", "REJ_VOL", "REJ_PCT"])
+    snapshot = {
+        "GOOD": _passing_snap(symbol="GOOD"),
+        "REJ_VOL": _passing_snap(symbol="REJ_VOL", volume=4_000_000),
+        "REJ_PCT": _passing_snap(symbol="REJ_PCT", last="5.40", prev_close="5.00"),
+    }
+    result = scanner.scan_with_decisions(universe, snapshot)
+    assert [p.ticker for p in result.picks] == ["GOOD"]
+    assert sorted((r.ticker, r.reason) for r in result.rejections) == [
+        ("REJ_PCT", "pct_change"), ("REJ_VOL", "rel_volume"),
+    ]
+
+
+def test_scan_with_decisions_all_rejected() -> None:
+    scanner = Scanner()
+    universe = frozenset(["A", "B", "C"])
+    snapshot = {
+        "A": _passing_snap(symbol="A", baseline_30d=None),     # missing_baseline
+        "B": _passing_snap(symbol="B", float_shares=None),     # missing_float
+        "C": _passing_snap(symbol="C", volume=4_000_000),      # rel_volume
+    }
+    result = scanner.scan_with_decisions(universe, snapshot)
+    assert result.picks == []
+    assert sorted((r.ticker, r.reason) for r in result.rejections) == [
+        ("A", "missing_baseline"), ("B", "missing_float"), ("C", "rel_volume"),
+    ]
+
+
+def test_scan_is_thin_wrapper_returning_only_picks() -> None:
+    """Issue #51: scan(...) must produce identical picks to scan_with_decisions(...).picks."""
+    scanner = Scanner()
+    universe = frozenset(["GOOD", "REJ_VOL"])
+    snapshot = {
+        "GOOD": _passing_snap(symbol="GOOD"),
+        "REJ_VOL": _passing_snap(symbol="REJ_VOL", volume=4_000_000),
+    }
+    via_scan = scanner.scan(universe, snapshot)
+    via_decisions = scanner.scan_with_decisions(universe, snapshot)
+    assert via_scan == via_decisions.picks
