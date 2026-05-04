@@ -216,9 +216,9 @@ def test_rejection_equality_value_based() -> None:
 
 
 def test_scan_result_is_frozen() -> None:
-    sr = ScanResult(picks=[_pick()], rejections=[_rejection()])
+    sr = ScanResult(picks=(_pick(),), rejections=(_rejection(),))
     with pytest.raises(FrozenInstanceError):
-        sr.picks = []  # type: ignore[misc]
+        sr.picks = ()  # type: ignore[misc]
 
 
 def test_scan_result_has_slots() -> None:
@@ -226,15 +226,22 @@ def test_scan_result_has_slots() -> None:
 
 
 def test_scan_result_picklable_roundtrip() -> None:
-    sr = ScanResult(picks=[_pick()], rejections=[_rejection()])
+    sr = ScanResult(picks=(_pick(),), rejections=(_rejection(),))
     revived = pickle.loads(pickle.dumps(sr))  # noqa: S301
     assert revived == sr
 
 
-def test_scan_result_empty_both_lists_ok() -> None:
-    sr = ScanResult(picks=[], rejections=[])
-    assert sr.picks == []
-    assert sr.rejections == []
+def test_scan_result_empty_both_tuples_ok() -> None:
+    sr = ScanResult(picks=(), rejections=())
+    assert sr.picks == ()
+    assert sr.rejections == ()
+
+
+def test_scan_result_fields_are_immutable_tuples() -> None:
+    """Tuple-typed fields block in-place mutation, not just re-assignment."""
+    sr = ScanResult(picks=(_pick(),), rejections=())
+    with pytest.raises(AttributeError):
+        sr.picks.append(_pick())  # type: ignore[attr-defined]
 
 
 # =============================================================================
@@ -280,7 +287,7 @@ def test_scan_with_decisions_passing_ticker_yields_one_pick_no_rejections() -> N
     )
     assert len(result.picks) == 1
     assert result.picks[0].ticker == "AVTX"
-    assert result.rejections == []
+    assert result.rejections == ()
 
 
 def test_scan_with_decisions_universe_not_in_snapshot_is_silently_skipped() -> None:
@@ -290,7 +297,7 @@ def test_scan_with_decisions_universe_not_in_snapshot_is_silently_skipped() -> N
         frozenset(["AVTX", "BBAI"]), {"AVTX": _passing_snap()},  # BBAI missing
     )
     assert [p.ticker for p in result.picks] == ["AVTX"]
-    assert result.rejections == []  # BBAI is NOT a rejection
+    assert result.rejections == ()  # BBAI is NOT a rejection
 
 
 def test_scan_with_decisions_missing_baseline_rejects() -> None:
@@ -298,7 +305,7 @@ def test_scan_with_decisions_missing_baseline_rejects() -> None:
     result = scanner.scan_with_decisions(
         frozenset(["AVTX"]), {"AVTX": _passing_snap(baseline_30d=None)},
     )
-    assert result.picks == []
+    assert result.picks == ()
     assert len(result.rejections) == 1
     assert result.rejections[0].reason == "missing_baseline"
     assert result.rejections[0].ticker == "AVTX"
@@ -309,7 +316,7 @@ def test_scan_with_decisions_missing_float_rejects() -> None:
     result = scanner.scan_with_decisions(
         frozenset(["AVTX"]), {"AVTX": _passing_snap(float_shares=None)},
     )
-    assert result.picks == []
+    assert result.picks == ()
     assert [r.reason for r in result.rejections] == ["missing_float"]
 
 
@@ -318,7 +325,7 @@ def test_scan_with_decisions_rel_volume_rejects() -> None:
     result = scanner.scan_with_decisions(
         frozenset(["AVTX"]), {"AVTX": _passing_snap(volume=4_000_000)},
     )
-    assert result.picks == []
+    assert result.picks == ()
     assert [r.reason for r in result.rejections] == ["rel_volume"]
 
 
@@ -328,7 +335,7 @@ def test_scan_with_decisions_pct_change_rejects() -> None:
         frozenset(["AVTX"]),
         {"AVTX": _passing_snap(last="5.40", prev_close="5.00")},  # +8%
     )
-    assert result.picks == []
+    assert result.picks == ()
     assert [r.reason for r in result.rejections] == ["pct_change"]
 
 
@@ -338,7 +345,7 @@ def test_scan_with_decisions_price_band_rejects_high() -> None:
         frozenset(["AVTX"]),
         {"AVTX": _passing_snap(close="25.00", last="25.50", prev_close="22.00")},
     )
-    assert result.picks == []
+    assert result.picks == ()
     assert [r.reason for r in result.rejections] == ["price_band"]
 
 
@@ -348,7 +355,7 @@ def test_scan_with_decisions_float_size_rejects() -> None:
         frozenset(["AVTX"]),
         {"AVTX": _passing_snap(float_shares=25_000_000)},
     )
-    assert result.picks == []
+    assert result.picks == ()
     assert [r.reason for r in result.rejections] == ["float_size"]
 
 
@@ -358,7 +365,7 @@ def test_scan_with_decisions_first_failure_wins_when_multiple_filters_fail() -> 
     scanner = Scanner()
     snap = _passing_snap(volume=4_000_000, last="5.40", prev_close="5.00")
     result = scanner.scan_with_decisions(frozenset(["AVTX"]), {"AVTX": snap})
-    assert result.picks == []
+    assert result.picks == ()
     assert [r.reason for r in result.rejections] == ["rel_volume"]  # not pct_change
 
 
@@ -386,14 +393,14 @@ def test_scan_with_decisions_all_rejected() -> None:
         "C": _passing_snap(symbol="C", volume=4_000_000),      # rel_volume
     }
     result = scanner.scan_with_decisions(universe, snapshot)
-    assert result.picks == []
+    assert result.picks == ()
     assert sorted((r.ticker, r.reason) for r in result.rejections) == [
         ("A", "missing_baseline"), ("B", "missing_float"), ("C", "rel_volume"),
     ]
 
 
-def test_scan_is_thin_wrapper_returning_only_picks() -> None:
-    """Issue #51: scan(...) must produce identical picks to scan_with_decisions(...).picks."""
+def test_scan_is_thin_wrapper_returning_top_n_picks() -> None:
+    """Issue #51: scan(...) returns the first top_n picks of scan_with_decisions(...)."""
     scanner = Scanner()
     universe = frozenset(["GOOD", "REJ_VOL"])
     snapshot = {
@@ -402,7 +409,31 @@ def test_scan_is_thin_wrapper_returning_only_picks() -> None:
     }
     via_scan = scanner.scan(universe, snapshot)
     via_decisions = scanner.scan_with_decisions(universe, snapshot)
-    assert via_scan == via_decisions.picks
+    # When passers <= top_n, the two contain the same picks (modulo container).
+    assert tuple(via_scan) == via_decisions.picks
+    assert isinstance(via_scan, list)  # scan(...) returns a fresh list copy
+
+
+def test_scan_with_decisions_partition_holds_when_passers_exceed_top_n() -> None:
+    """Codex P1 regression: with 7 passers and top_n=5, ALL 7 must appear in
+    picks (no overflow drop), so the partition contract holds."""
+    scanner = Scanner()  # default top_n=5
+    pcts = {"A": 10, "B": 20, "C": 15, "D": 11, "E": 25, "F": 12, "G": 18}
+    universe = frozenset(pcts)
+    snapshot = {}
+    for sym, pct in pcts.items():
+        new_last = Decimal("5.00") + Decimal("5.00") * Decimal(pct) / Decimal("100")
+        snapshot[sym] = _passing_snap(symbol=sym, last=str(new_last), prev_close="5.00")
+    result = scanner.scan_with_decisions(universe, snapshot)
+    # Partition: 7 passers in picks, 0 in rejections.
+    assert len(result.picks) == 7
+    assert result.rejections == ()
+    # Ranked by pct desc: E=25, B=20, G=18, C=15, F=12, D=11, A=10.
+    assert [p.ticker for p in result.picks] == ["E", "B", "G", "C", "F", "D", "A"]
+    assert [p.rank for p in result.picks] == [1, 2, 3, 4, 5, 6, 7]
+    # The scan(...) wrapper still slices to top_n=5 for back-compat.
+    via_scan = scanner.scan(universe, snapshot)
+    assert [p.ticker for p in via_scan] == ["E", "B", "G", "C", "F"]
 
 
 # =====================================================================

@@ -112,9 +112,14 @@ class Scanner:
                 ))
                 continue
             candidates.append(self._build_pick(ticker, snap, baseline, float_rec))
+        # `scan_with_decisions` returns ALL ranked passers (no top_n truncation)
+        # so the partition contract holds: every universe member with a
+        # snapshot is in exactly one of `picks` or `rejections`. The
+        # back-compat `scan(...)` wrapper applies the `[:top_n]` slice for
+        # callers that only want the watchlist-sized result.
         return ScanResult(
-            picks=rank_picks(candidates, n=self._top_n),
-            rejections=rejections,
+            picks=tuple(rank_picks(candidates, n=len(candidates))),
+            rejections=tuple(rejections),
         )
 
     def scan(
@@ -122,12 +127,17 @@ class Scanner:
         universe: frozenset[str],
         snapshot: Mapping[str, ScannerSnapshot],
     ) -> list[ScannerPick]:
-        """Return only the picks; thin wrapper over :meth:`scan_with_decisions`.
+        """Return top-N picks; thin wrapper over :meth:`scan_with_decisions`.
 
-        Preserved for callers that don't care about rejection journaling
-        (e.g., back-test drivers, ad-hoc scripts).
+        Preserved for callers that only care about the watchlist-sized
+        slice (e.g., back-test drivers, ad-hoc scripts). The full
+        partition is in :meth:`scan_with_decisions`'s :class:`ScanResult`.
+
+        The returned ``list`` is a fresh copy of the tuple-backed
+        :attr:`ScanResult.picks` -- callers may mutate it without
+        affecting the underlying immutable scan result.
         """
-        return self.scan_with_decisions(universe, snapshot).picks
+        return list(self.scan_with_decisions(universe, snapshot).picks[: self._top_n])
 
     def _build_pick(
         self,

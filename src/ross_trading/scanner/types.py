@@ -115,7 +115,12 @@ class ScanResult:
     appears in exactly one of ``picks`` or ``rejections``. Members
     with no snapshot entry are silently skipped (preserves
     :meth:`Scanner.scan`'s pre-existing policy at ``scanner.py:67-70``).
+
+    Fields are tuples so the dataclass is fully immutable: ``frozen=True``
+    blocks field re-assignment and ``tuple`` blocks in-place mutation
+    of the underlying sequences. Callers that need a mutable working
+    copy should ``list(result.picks)``.
     """
 
-    picks: list[ScannerPick]
-    rejections: list[ScannerRejection]
+    picks: tuple[ScannerPick, ...]
+    rejections: tuple[ScannerRejection, ...]

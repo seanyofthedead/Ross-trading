@@ -1,27 +1,27 @@
 """Concrete :class:`DecisionSink` backed by the SQLAlchemy session factory.
 
-Phase 2 -- Atom A5 (#44). Implements the
+Phase 2 -- Atom A5 (#44), extended in A8 (#51) to route picks +
+rejections through :meth:`record_scan`. Implements the
 :class:`ross_trading.scanner.decisions.DecisionSink` Protocol against the
 journal models defined in :mod:`ross_trading.journal.models`. Two surfaces:
 
-* :meth:`JournalWriter.emit` -- the A3 hot path. Each call opens a session,
-  writes one decision row (plus a linked :class:`Pick` row for ``picked``),
-  and commits. Each call is its own atomic 1-row transaction.
-* :meth:`JournalWriter.record_scan` -- the batch API. Picks and rejections
-  for a single tick land in one session and are committed together. This
-  is the "one tick = one transaction" surface tested for atomic partial-
-  failure rollback.
+* :meth:`JournalWriter.emit` -- one-row writes for ``stale_feed`` and
+  ``feed_gap``. Each call opens a session, writes one decision row, and
+  commits as its own atomic 1-row transaction. ``picked`` and ``rejected``
+  rows are not routed through ``emit`` in production code (the writer's
+  ``_add`` method rejects ``rejected`` at runtime; ``picked`` is supported
+  for backward compatibility but no longer used by the loop).
+* :meth:`JournalWriter.record_scan` -- the per-tick batch API used by
+  :class:`ross_trading.scanner.loop.ScannerLoop` since #51. Picks and
+  rejections for a single tick land in one session and are committed
+  together. This is the "one tick = one transaction" surface tested for
+  atomic partial-failure rollback.
 
-**Atomicity scope today.** A3's loop calls :meth:`emit` N times per tick
-(one per pick, plus stale_feed / feed_gap as they occur), so a crash mid-
-tick can leave a partial picked-set on disk -- under-recording, not
-inconsistency. The current three kinds are structurally near-atomic
-(stale_feed and feed_gap fire alone; only "pick #2 vs pick #3 of the same
-tick" can split). A3 is stateless across ticks, so the next tick runs
-fresh and downstream invariants hold. When #51 lands the fourth ``rejected``
-kind, picks + rejections need true tick-atomicity -- splitting them would
-systematically overstate scanner precision -- and #51 will migrate A3's
-loop from N x :meth:`emit` to a single :meth:`record_scan` per tick.
+**Atomicity scope.** ``stale_feed`` and ``feed_gap`` fire alone, so their
+``emit`` path has no atomicity requirement. ``picked`` and ``rejected``
+travel together via ``record_scan`` -- splitting them would systematically
+overstate scanner precision, so the loop calls ``record_scan`` exactly
+once per non-stale tick.
 
 **Transactional configuration.** This module intentionally does not issue
 ``BEGIN IMMEDIATE`` per call. The journal :class:`Engine` installs a

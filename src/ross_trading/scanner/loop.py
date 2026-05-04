@@ -15,7 +15,7 @@ ticks are no-ops, not exits.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from ross_trading.core.clock import is_market_hours
 from ross_trading.journal.models import RejectionReason
@@ -33,8 +33,11 @@ if TYPE_CHECKING:
 
 # Mirrors the Literal -> Enum mapping. The Literal values are the contract
 # pinned by `scanner/types.py::RejectionReasonLit`; the Enum is the DB-
-# facing twin from `journal/models.py::RejectionReason`. mypy strict catches
-# any drift at this match site.
+# facing twin from `journal/models.py::RejectionReason`. The wildcard
+# arm calls `assert_never`, which is the canonical exhaustive-match marker:
+# mypy strict fails at type-check time if the Literal grows and a case is
+# missed; at runtime it raises AssertionError instead of silently returning
+# None.
 def _lit_to_enum(reason: RejectionReasonLit) -> RejectionReason:
     match reason:
         case "no_snapshot":
@@ -51,6 +54,8 @@ def _lit_to_enum(reason: RejectionReasonLit) -> RejectionReason:
             return RejectionReason.PRICE_BAND
         case "float_size":
             return RejectionReason.FLOAT_SIZE
+        case _:  # pragma: no cover -- unreachable by type, defensive at runtime
+            assert_never(reason)
 
 
 class ScannerLoop:

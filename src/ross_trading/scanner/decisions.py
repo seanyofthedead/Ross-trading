@@ -26,20 +26,34 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ScannerDecision:
-    """One row emitted to the journal per non-batched tick outcome.
+    """One row carried to the journal per tick outcome.
+
+    **Surface routing.** Two kinds (``picked``, ``rejected``) are
+    carried in batches via :meth:`DecisionSink.record_scan` for
+    tick-atomicity. Two kinds (``stale_feed``, ``feed_gap``) fire
+    alone and are carried via :meth:`DecisionSink.emit`. The
+    ``ScannerDecision`` shape is uniform across both surfaces; the
+    Literal mirrors ``journal.models.DecisionKind`` for symmetry,
+    so a ``ScannerDecision(kind="rejected", ...)`` is type-valid
+    even though production code never passes one to ``emit()``
+    (the writer's ``_add`` rejects that path at runtime).
 
     Four kinds:
-    - ``picked``: ticker passed all hard filters; ``pick`` carries
+
+    - ``picked`` -- ticker passed all hard filters; ``pick`` carries
       the ranked ScannerPick; ``ticker`` mirrors ``pick.ticker``.
-      (Carried via :meth:`DecisionSink.record_scan` post-#51, not emit.)
-    - ``stale_feed``: emitted in real time, once per suppressed tick;
-      ``ticker`` is None (loop-wide); ``reason`` is human-readable.
-    - ``feed_gap``: emitted retrospectively when the reconnect provider
-      fires its on_gap callback; ``gap_start`` / ``gap_end`` are
-      quote-time, not wall-time.
-    - ``rejected`` (#51): a universe member that failed the scanner's
-      hard filters; ``rejection_reason`` carries the first-failing-
-      filter literal. Carried via :meth:`record_scan`, not emit.
+      Carried via :meth:`DecisionSink.record_scan`.
+    - ``rejected`` (#51) -- a universe member that failed the
+      scanner's hard filters; ``rejection_reason`` carries the
+      first-failing-filter literal. Carried via
+      :meth:`DecisionSink.record_scan`, never via ``emit``.
+    - ``stale_feed`` -- emitted in real time, once per suppressed
+      tick; ``ticker`` is None (loop-wide); ``reason`` is
+      human-readable. Carried via :meth:`DecisionSink.emit`.
+    - ``feed_gap`` -- emitted retrospectively when the reconnect
+      provider fires its on_gap callback; ``gap_start`` /
+      ``gap_end`` are quote-time, not wall-time. Carried via
+      :meth:`DecisionSink.emit`.
     """
 
     kind: Literal["picked", "stale_feed", "feed_gap", "rejected"]
