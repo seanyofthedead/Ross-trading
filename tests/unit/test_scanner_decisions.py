@@ -1,4 +1,10 @@
-"""Atom A3 -- ScannerDecision + DecisionSink (issue #42)."""
+"""Atom A3 + A8 -- ScannerDecision + DecisionSink (#42), ScannerRejection +
+ScanResult + scan_with_decisions (#51).
+
+Per #51 plan D-A8-3: this file extends rather than forks because the new
+types live in the same semantic domain (scanner-decision shapes) as the
+existing ones.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,7 @@ from decimal import Decimal
 import pytest
 
 from ross_trading.scanner.decisions import DecisionSink, ScannerDecision
-from ross_trading.scanner.types import ScannerPick
+from ross_trading.scanner.types import ScannerPick, ScannerRejection, ScanResult
 from tests.fakes.decision_sink import FakeDecisionSink
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
@@ -165,3 +171,55 @@ def test_decision_rejects_naive_gap_end() -> None:
             gap_start=T0 - timedelta(seconds=30),
             gap_end=datetime(2026, 4, 26, 14, 30),  # naive
         )
+
+
+# =============================================================================
+# Issue #51 -- ScannerRejection, ScanResult value types
+# =============================================================================
+
+
+def _rejection(reason: str = "rel_volume", ticker: str = "AVTX") -> ScannerRejection:
+    return ScannerRejection(ticker=ticker, ts=T0, reason=reason)  # type: ignore[arg-type]
+
+
+def test_rejection_is_frozen() -> None:
+    r = _rejection()
+    with pytest.raises(FrozenInstanceError):
+        r.reason = "pct_change"  # type: ignore[misc]
+
+
+def test_rejection_has_slots() -> None:
+    assert "__slots__" in ScannerRejection.__dict__
+
+
+def test_rejection_picklable_roundtrip() -> None:
+    r = _rejection()
+    revived = pickle.loads(pickle.dumps(r))  # noqa: S301
+    assert revived == r
+
+
+def test_rejection_equality_value_based() -> None:
+    assert _rejection() == _rejection()
+    assert _rejection(reason="rel_volume") != _rejection(reason="pct_change")
+
+
+def test_scan_result_is_frozen() -> None:
+    sr = ScanResult(picks=[_pick()], rejections=[_rejection()])
+    with pytest.raises(FrozenInstanceError):
+        sr.picks = []  # type: ignore[misc]
+
+
+def test_scan_result_has_slots() -> None:
+    assert "__slots__" in ScanResult.__dict__
+
+
+def test_scan_result_picklable_roundtrip() -> None:
+    sr = ScanResult(picks=[_pick()], rejections=[_rejection()])
+    revived = pickle.loads(pickle.dumps(sr))  # noqa: S301
+    assert revived == sr
+
+
+def test_scan_result_empty_both_lists_ok() -> None:
+    sr = ScanResult(picks=[], rejections=[])
+    assert sr.picks == []
+    assert sr.rejections == []

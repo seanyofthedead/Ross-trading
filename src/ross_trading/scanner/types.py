@@ -10,7 +10,7 @@ owns provider I/O and assembles the snapshot map.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -18,6 +18,20 @@ if TYPE_CHECKING:
     from decimal import Decimal
 
     from ross_trading.data.types import Bar, FloatRecord, Headline
+
+
+# Mirrors `journal.models.RejectionReason` string values exactly.
+# Both must stay in lockstep -- if you add a value here, add it there
+# (and the migration to ALTER TYPE), and vice versa.
+RejectionReasonLit = Literal[
+    "no_snapshot",
+    "missing_baseline",
+    "missing_float",
+    "rel_volume",
+    "pct_change",
+    "price_band",
+    "float_size",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,3 +88,34 @@ class ScannerPick:
     news_present: bool
     headline_count: int
     rank: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ScannerRejection:
+    """One universe member that failed the scanner's hard filters.
+
+    Phase 2 -- issue #51. ``reason`` is the *first* failing filter in
+    :meth:`Scanner.scan_with_decisions`'s evaluation order, which mirrors
+    the AND-chain in the legacy :meth:`Scanner.scan`. The literal
+    values are the contract referenced by the SQL schema's
+    ``RejectionReason`` enum; renaming any value requires a coordinated
+    migration.
+    """
+
+    ticker: str
+    ts: datetime
+    reason: RejectionReasonLit
+
+
+@dataclass(frozen=True, slots=True)
+class ScanResult:
+    """Combined output of :meth:`Scanner.scan_with_decisions`.
+
+    Phase 2 -- issue #51. Every universe member that has a snapshot
+    appears in exactly one of ``picks`` or ``rejections``. Members
+    with no snapshot entry are silently skipped (preserves
+    :meth:`Scanner.scan`'s pre-existing policy at ``scanner.py:67-70``).
+    """
+
+    picks: list[ScannerPick]
+    rejections: list[ScannerRejection]
