@@ -5,7 +5,11 @@ name: Drift CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # `labeled`/`unlabeled` are included so applying or removing the
+    # `drift-waiver` label re-runs enforcement (otherwise the PR stays blocked
+    # until another commit is pushed). Jobs gate non-waiver label changes via
+    # the per-job `if:` so we don't burn CI on unrelated label edits.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -33,13 +37,39 @@ jobs:
   baseline:
     name: Baseline (lint, type, tests, migrations)
     runs-on: ubuntu-latest
+    # Skip label-triggered runs unless the changed label is `drift-waiver`.
+    # All other event types pass through unchanged.
+    if: |
+      github.event_name != 'pull_request'
+      || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
+      || github.event.label.name == 'drift-waiver'
     permissions:
       contents: read
     steps:
+      - name: Resolve PR ref
+        id: resolve_ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_PR: ${{ github.event.pull_request.number }}
+          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
+          DEFAULT_SHA: ${{ github.sha }}
+        run: |
+          # workflow_dispatch sets github.event.pull_request to null, so the
+          # bare `pull_request.head.sha || github.sha` fallback would check out
+          # the manually selected branch ref instead of the PR identified by
+          # `inputs.pr_number`. Resolve to the PR head ref explicitly.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "ref=refs/pull/${PR_NUMBER_PR}/head" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$PR_NUMBER_INPUT" ]]; then
+            echo "ref=refs/pull/${PR_NUMBER_INPUT}/head" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${DEFAULT_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ steps.resolve_ref.outputs.ref }}
           fetch-depth: 1
 
       - name: Set up Python
@@ -76,6 +106,12 @@ jobs:
     name: Drift scan and enforcement
     needs: baseline
     runs-on: ubuntu-latest
+    # Skip label-triggered runs unless the changed label is `drift-waiver`.
+    # All other event types pass through unchanged.
+    if: |
+      github.event_name != 'pull_request'
+      || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
+      || github.event.label.name == 'drift-waiver'
     permissions:
       contents: read
       pull-requests: write
@@ -102,10 +138,30 @@ jobs:
             echo "reason=forked PR; secrets are not exposed" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve PR ref
+        id: resolve_ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_PR: ${{ github.event.pull_request.number }}
+          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
+          DEFAULT_SHA: ${{ github.sha }}
+        run: |
+          # workflow_dispatch sets github.event.pull_request to null, so the
+          # bare `pull_request.head.sha || github.sha` fallback would check out
+          # the manually selected branch ref instead of the PR identified by
+          # `inputs.pr_number`. Resolve to the PR head ref explicitly.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "ref=refs/pull/${PR_NUMBER_PR}/head" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$PR_NUMBER_INPUT" ]]; then
+            echo "ref=refs/pull/${PR_NUMBER_INPUT}/head" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${DEFAULT_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout PR head (full history)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ steps.resolve_ref.outputs.ref }}
           fetch-depth: 0
 
       - name: Set up Python
