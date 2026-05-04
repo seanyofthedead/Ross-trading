@@ -12,10 +12,12 @@ import pickle
 from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest
 
 from ross_trading.data.types import Bar, FloatRecord
+from ross_trading.journal.models import RejectionReason
 from ross_trading.scanner.decisions import DecisionSink, ScannerDecision
 from ross_trading.scanner.scanner import Scanner
 from ross_trading.scanner.types import (
@@ -25,6 +27,9 @@ from ross_trading.scanner.types import (
     ScanResult,
 )
 from tests.fakes.decision_sink import FakeDecisionSink
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 
@@ -398,3 +403,77 @@ def test_scan_is_thin_wrapper_returning_only_picks() -> None:
     via_scan = scanner.scan(universe, snapshot)
     via_decisions = scanner.scan_with_decisions(universe, snapshot)
     assert via_scan == via_decisions.picks
+
+
+# =====================================================================
+# Issue #51 -- ScannerDecision.kind="rejected" + DecisionSink.record_scan
+# =====================================================================
+
+
+def _rejected_decision() -> ScannerDecision:
+    return ScannerDecision(
+        kind="rejected",
+        decision_ts=T0,
+        ticker="AVTX",
+        pick=None,
+        reason=None,
+        gap_start=None,
+        gap_end=None,
+        rejection_reason="rel_volume",
+    )
+
+
+def test_decision_accepts_rejected_kind() -> None:
+    d = _rejected_decision()
+    assert d.kind == "rejected"
+    assert d.ticker == "AVTX"
+    assert d.rejection_reason == "rel_volume"
+
+
+def test_decision_rejected_picklable_roundtrip() -> None:
+    d = _rejected_decision()
+    revived = pickle.loads(pickle.dumps(d))  # noqa: S301
+    assert revived == d
+
+
+def test_decision_rejection_reason_defaults_to_none_for_other_kinds() -> None:
+    """Existing call sites that build picked/stale_feed/feed_gap without
+    passing rejection_reason must continue to work."""
+    d = _picked()  # uses the original 7-field constructor
+    assert d.rejection_reason is None
+
+
+class _RecordingSink:
+    """Inline sink stand-in to assert Protocol shape post-extension."""
+
+    def __init__(self) -> None:
+        self.scans: list[
+            tuple[datetime, list[ScannerPick], dict[str, RejectionReason]]
+        ] = []
+        self.decisions: list[ScannerDecision] = []
+
+    def emit(self, decision: ScannerDecision) -> None:
+        self.decisions.append(decision)
+
+    def record_scan(
+        self,
+        decision_ts: datetime,
+        picks: Sequence[ScannerPick],
+        rejected: Mapping[str, RejectionReason],
+    ) -> None:
+        self.scans.append((decision_ts, list(picks), dict(rejected)))
+
+
+def test_recording_sink_satisfies_extended_decision_sink_protocol() -> None:
+    sink = _RecordingSink()
+    assert isinstance(sink, DecisionSink)
+
+
+def test_record_scan_stores_picks_and_rejected() -> None:
+    sink = _RecordingSink()
+    sink.record_scan(T0, [_pick()], {"BBAI": RejectionReason.REL_VOLUME})
+    assert len(sink.scans) == 1
+    ts, picks, rejected = sink.scans[0]
+    assert ts == T0
+    assert picks == [_pick()]
+    assert rejected == {"BBAI": RejectionReason.REL_VOLUME}
