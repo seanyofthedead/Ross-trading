@@ -116,7 +116,7 @@ async def test_outside_market_hours_loop_keeps_running_not_exits() -> None:
 # ------------------------------------------------------ inside-window happy path
 
 
-async def test_inside_market_hours_calls_assembler_and_emits_picked() -> None:
+async def test_inside_market_hours_calls_assembler_and_records_scan_with_picks() -> None:
     snap = _snap("AVTX")
     loop, _, sink, assembler = _build_loop(
         start=INSIDE_TS,
@@ -124,18 +124,20 @@ async def test_inside_market_hours_calls_assembler_and_emits_picked() -> None:
     )
     await _run_for_n_ticks(loop, n=1)
     assert assembler.calls == [INSIDE_TS]
-    assert len(sink.decisions) == 1
-    d = sink.decisions[0]
-    assert d.kind == "picked"
-    assert d.ticker == "AVTX"
-    assert d.pick is not None
-    assert d.pick.rank == 1
-    assert d.decision_ts == INSIDE_TS
+    assert sink.decisions == []  # picks now go via record_scan, not emit
+    assert len(sink.scans) == 1
+    ts, picks, rejected = sink.scans[0]
+    assert ts == INSIDE_TS
+    assert len(picks) == 1
+    assert picks[0].ticker == "AVTX"
+    assert picks[0].rank == 1
+    assert rejected == {}
 
 
-async def test_no_picks_emits_no_decisions() -> None:
-    """Empty Scanner result -> empty decision stream for that tick."""
-    # Use a snap that fails the rel-volume filter (volume too low).
+async def test_no_picks_records_scan_with_one_rejection() -> None:
+    """Empty Scanner picks now produce a record_scan with one rejection
+    (rel_volume), not an empty decision stream."""
+    from ross_trading.journal.models import RejectionReason
     snap = ScannerSnapshot(
         bar=Bar(
             symbol="AVTX", ts=INSIDE_TS, timeframe="M1",
@@ -157,9 +159,14 @@ async def test_no_picks_emits_no_decisions() -> None:
     )
     await _run_for_n_ticks(loop, n=1)
     assert sink.decisions == []
+    assert len(sink.scans) == 1
+    ts, picks, rejected = sink.scans[0]
+    assert ts == INSIDE_TS
+    assert picks == []
+    assert rejected == {"AVTX": RejectionReason.REL_VOLUME}
 
 
-async def test_multiple_picks_emitted_in_rank_order() -> None:
+async def test_multiple_picks_recorded_in_rank_order() -> None:
     a, b, c = _snap("AAA", last="5.50"), _snap("BBB", last="6.50"), _snap("CCC", last="6.00")
     snapshot_map = {"AAA": a, "BBB": b, "CCC": c}
     loop, _, sink, _ = _build_loop(
@@ -168,9 +175,12 @@ async def test_multiple_picks_emitted_in_rank_order() -> None:
         universe=frozenset(["AAA", "BBB", "CCC"]),
     )
     await _run_for_n_ticks(loop, n=1)
+    assert len(sink.scans) == 1
+    _, picks, rejected = sink.scans[0]
     # Sorted by pct_change desc: BBB (+30%), CCC (+20%), AAA (+10%).
-    assert [d.ticker for d in sink.decisions] == ["BBB", "CCC", "AAA"]
-    assert [d.pick.rank for d in sink.decisions if d.pick is not None] == [1, 2, 3]
+    assert [p.ticker for p in picks] == ["BBB", "CCC", "AAA"]
+    assert [p.rank for p in picks] == [1, 2, 3]
+    assert rejected == {}
 
 
 # ----------------------------------------------------------------- cancellation
@@ -219,7 +229,7 @@ async def test_loop_uses_injected_clock_sleep_not_asyncio_sleep() -> None:
     )
     await _run_for_n_ticks(loop, n=2)
     assert assembler.calls == [INSIDE_TS, INSIDE_TS.replace(second=2)]
-    assert len(sink.decisions) == 2
+    assert len(sink.scans) == 2
 
 
 # ------------------------------------------------------------------ staleness
@@ -233,8 +243,8 @@ async def test_pre_first_quote_does_not_suppress_scan() -> None:
         by_anchor={INSIDE_TS: ({"AVTX": snap}, None)},  # None = pre-first-quote
     )
     await _run_for_n_ticks(loop, n=1)
-    assert len(sink.decisions) == 1
-    assert sink.decisions[0].kind == "picked"
+    assert len(sink.scans) == 1
+    assert len(sink.scans[0][1]) == 1  # one pick
 
 
 async def test_stale_feed_suppresses_scan_and_emits_stale_decision() -> None:
@@ -265,8 +275,8 @@ async def test_fresh_feed_within_threshold_runs_scan() -> None:
         by_anchor={INSIDE_TS: ({"AVTX": snap}, fresh_quote_ts)},
     )
     await _run_for_n_ticks(loop, n=1)
-    assert len(sink.decisions) == 1
-    assert sink.decisions[0].kind == "picked"
+    assert len(sink.scans) == 1
+    assert len(sink.scans[0][1]) == 1  # one pick
 
 
 async def test_stale_feed_emitted_each_tick_no_dedup() -> None:
@@ -329,3 +339,38 @@ async def test_on_feed_gap_does_not_block_or_call_async_path() -> None:
     loop.on_feed_gap(FeedGap(symbol=None, start=INSIDE_TS, end=INSIDE_TS, reason="x"))
     assert len(sink.decisions) == 1
     assert assembler.calls == []  # no scan triggered
+
+
+# =====================================================================
+# Issue #51 -- mixed picks + rejections in one record_scan call
+# =====================================================================
+
+
+async def test_tick_with_mixed_picks_and_rejections_records_one_scan() -> None:
+    """Per #51 D-A8-1: picks + rejections for one tick land in ONE record_scan call."""
+    from ross_trading.journal.models import RejectionReason
+    good = _snap("GOOD", last="5.50")
+    bad_volume = ScannerSnapshot(
+        bar=Bar(
+            symbol="BAD_VOL", ts=INSIDE_TS, timeframe="M1",
+            open=Decimal("5"), high=Decimal("5.5"), low=Decimal("4.95"),
+            close=Decimal("5.5"), volume=10_000,  # rel_volume reject
+        ),
+        last=Decimal("5.50"), prev_close=Decimal("5.00"),
+        baseline_30d=Decimal("1000000"),
+        float_record=FloatRecord(
+            ticker="BAD_VOL", as_of=date(2025, 1, 2),
+            float_shares=8_500_000, shares_outstanding=12_000_000, source="test",
+        ),
+        headlines=(),
+    )
+    loop, _, sink, _ = _build_loop(
+        start=INSIDE_TS,
+        by_anchor={INSIDE_TS: ({"GOOD": good, "BAD_VOL": bad_volume}, INSIDE_TS)},
+        universe=frozenset(["GOOD", "BAD_VOL"]),
+    )
+    await _run_for_n_ticks(loop, n=1)
+    assert len(sink.scans) == 1
+    _, picks, rejected = sink.scans[0]
+    assert [p.ticker for p in picks] == ["GOOD"]
+    assert rejected == {"BAD_VOL": RejectionReason.REL_VOLUME}

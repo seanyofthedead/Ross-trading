@@ -1,10 +1,12 @@
 """Async tick driver for the scanner.
 
-Phase 2 -- Atom A3 (#42). Long-running coroutine that paces
-:meth:`Scanner.scan` on a Clock and emits per-pick decisions to an
-injected :class:`DecisionSink`. The loop owns no provider I/O --
-the injected :class:`SnapshotAssembler` is the replay-determinism
-boundary.
+Phase 2 -- Atom A3 (#42), extended in A8 (#51) to migrate the scan
+branch from N x ``emit`` to a single ``record_scan`` per tick (atomic
+picks + rejections). Long-running coroutine that paces
+:meth:`Scanner.scan_with_decisions` on a Clock and emits per-tick
+batches to an injected :class:`DecisionSink`. The loop owns no
+provider I/O -- the injected :class:`SnapshotAssembler` is the
+replay-determinism boundary.
 
 Cancellation: ``run()`` re-raises CancelledError. No drain on
 shutdown, no upstream subscription cleanup. Outside-market-hours
@@ -16,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ross_trading.core.clock import is_market_hours
+from ross_trading.journal.models import RejectionReason
 from ross_trading.scanner.decisions import ScannerDecision
 
 if TYPE_CHECKING:
@@ -25,10 +28,33 @@ if TYPE_CHECKING:
     from ross_trading.scanner.assembler import SnapshotAssembler
     from ross_trading.scanner.decisions import DecisionSink
     from ross_trading.scanner.scanner import Scanner
+    from ross_trading.scanner.types import RejectionReasonLit
+
+
+# Mirrors the Literal -> Enum mapping. The Literal values are the contract
+# pinned by `scanner/types.py::RejectionReasonLit`; the Enum is the DB-
+# facing twin from `journal/models.py::RejectionReason`. mypy strict catches
+# any drift at this match site.
+def _lit_to_enum(reason: RejectionReasonLit) -> RejectionReason:
+    match reason:
+        case "no_snapshot":
+            return RejectionReason.NO_SNAPSHOT
+        case "missing_baseline":
+            return RejectionReason.MISSING_BASELINE
+        case "missing_float":
+            return RejectionReason.MISSING_FLOAT
+        case "rel_volume":
+            return RejectionReason.REL_VOLUME
+        case "pct_change":
+            return RejectionReason.PCT_CHANGE
+        case "price_band":
+            return RejectionReason.PRICE_BAND
+        case "float_size":
+            return RejectionReason.FLOAT_SIZE
 
 
 class ScannerLoop:
-    """Drive Scanner.scan on a Clock-paced tick."""
+    """Drive Scanner.scan_with_decisions on a Clock-paced tick."""
 
     def __init__(
         self,
@@ -82,19 +108,13 @@ class ScannerLoop:
                     )
                 )
                 return
-        picks = self._scanner.scan(universe, snapshot)
-        for pick in picks:
-            self._sink.emit(
-                ScannerDecision(
-                    kind="picked",
-                    decision_ts=anchor_ts,
-                    ticker=pick.ticker,
-                    pick=pick,
-                    reason=None,
-                    gap_start=None,
-                    gap_end=None,
-                )
-            )
+        result = self._scanner.scan_with_decisions(universe, snapshot)
+        rejected = {r.ticker: _lit_to_enum(r.reason) for r in result.rejections}
+        self._sink.record_scan(
+            decision_ts=anchor_ts,
+            picks=result.picks,
+            rejected=rejected,
+        )
 
     def on_feed_gap(self, gap: FeedGap) -> None:
         """Receive a retrospective FeedGap and emit a feed_gap decision.
