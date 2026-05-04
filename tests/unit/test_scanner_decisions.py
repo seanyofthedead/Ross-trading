@@ -477,3 +477,9 @@ def test_record_scan_stores_picks_and_rejected() -> None:
     assert ts == T0
     assert picks == [_pick()]
     assert rejected == {"BBAI": RejectionReason.REL_VOLUME}
+
+
+def test_fake_decision_sink_satisfies_extended_protocol() -> None:
+    """Post-#51, the bundled fake must implement both emit and record_scan."""
+    sink = FakeDecisionSink()
+    assert isinstance(sink, DecisionSink)
