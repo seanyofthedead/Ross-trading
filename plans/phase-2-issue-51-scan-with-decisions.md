@@ -99,8 +99,8 @@ class ScanResult:
     exactly one of `picks` or `rejections`. Members with no snapshot
     are silently skipped (preserves Scanner.scan policy).
     """
-    picks: list[ScannerPick]
-    rejections: list[ScannerRejection]
+    picks: tuple[ScannerPick, ...]
+    rejections: tuple[ScannerRejection, ...]
 
 
 # src/ross_trading/scanner/scanner.py — additions
@@ -425,8 +425,8 @@ class ScanResult:
     :meth:`Scanner.scan`'s pre-existing policy at ``scanner.py:67-70``).
     """
 
-    picks: list[ScannerPick]
-    rejections: list[ScannerRejection]
+    picks: tuple[ScannerPick, ...]
+    rejections: tuple[ScannerRejection, ...]
 ```
 
 - [ ] **Step 4: Run the new tests to verify they pass**
@@ -794,9 +794,14 @@ class Scanner:
                 ))
                 continue
             candidates.append(self._build_pick(ticker, snap, baseline, float_rec))
+        # n=len(candidates) preserves the partition invariant: every snapshot
+        # member ends up in exactly one of picks/rejections. Truncating to
+        # self._top_n here would silently drop passers above the watchlist
+        # size. The legacy scan() wrapper applies [:self._top_n] at its
+        # call site for callers that want the watchlist-sized slice.
         return ScanResult(
-            picks=rank_picks(candidates, n=self._top_n),
-            rejections=rejections,
+            picks=tuple(rank_picks(candidates, n=len(candidates))),
+            rejections=tuple(rejections),
         )
 
     def scan(
