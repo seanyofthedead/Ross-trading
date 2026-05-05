@@ -149,15 +149,18 @@ async def test_no_scans_outside_07_to_11_et() -> None:
     )
     loop, clock, sink = _build(start=pre_open, script=script)
     await _drive_until(loop, clock, post_close)
-    # Every decision must fall in [WINDOW_OPEN, WINDOW_CLOSE).
+    # Every emit-style decision must fall in [WINDOW_OPEN, WINDOW_CLOSE).
     for d in sink.decisions:
         assert WINDOW_OPEN <= d.decision_ts < WINDOW_CLOSE
+    # Every record_scan call (post-#51, picks live here) must fall in the window.
+    for ts, _, _ in sink.scans:
+        assert WINDOW_OPEN <= ts < WINDOW_CLOSE
     # And we should have many picks (window contains 7200 ticks, all qualifying).
-    assert any(d.kind == "picked" for d in sink.decisions)
-    # Sanity: first pick is at WINDOW_OPEN (inclusive), last is at WINDOW_CLOSE - 2s (exclusive).
-    picked_ts = [d.decision_ts for d in sink.decisions if d.kind == "picked"]
-    assert picked_ts[0] == WINDOW_OPEN
-    assert picked_ts[-1] == WINDOW_CLOSE - timedelta(seconds=2)
+    assert any(picks for _, picks, _ in sink.scans)
+    # Sanity: first scan with picks at WINDOW_OPEN, last at WINDOW_CLOSE - 2s.
+    scan_ts_with_picks = [ts for ts, picks, _ in sink.scans if picks]
+    assert scan_ts_with_picks[0] == WINDOW_OPEN
+    assert scan_ts_with_picks[-1] == WINDOW_CLOSE - timedelta(seconds=2)
 
 
 # ------------------------------------------------------------- pre-first-quote
@@ -219,19 +222,21 @@ async def test_two_runs_produce_byte_identical_decision_streams() -> None:
     loop_b, clock_b, sink_b = _build(start=WINDOW_OPEN, script=dict(script))
     await _drive_until(loop_a, clock_a, WINDOW_OPEN + timedelta(seconds=6))
     await _drive_until(loop_b, clock_b, WINDOW_OPEN + timedelta(seconds=6))
+    # Replay determinism covers both surfaces (emit + record_scan).
     assert sink_a.decisions == sink_b.decisions
+    assert sink_a.scans == sink_b.scans
     # Plus a positive sanity: at least one pick fired in the run.
-    assert any(d.kind == "picked" for d in sink_a.decisions)
+    assert any(picks for _, picks, _ in sink_a.scans)
 
 
 # ----------------------------------------------------- steady-state memory shape
 
 
 async def test_steady_state_no_unbounded_growth() -> None:
-    """Sanity: 100-tick run produces exactly the expected count of decisions.
+    """Sanity: 100-tick run produces exactly the expected count of scans.
 
-    The loop must not buffer or coalesce. One pick per qualifying tick;
-    one stale_feed per stale tick; nothing else is queued.
+    The loop must not buffer or coalesce. One record_scan per qualifying
+    tick (carrying one pick); nothing else is queued.
     """
     snap = _snap("AVTX", WINDOW_OPEN)
     script: dict[datetime, tuple[dict[str, ScannerSnapshot], datetime | None]] = {}
@@ -244,5 +249,8 @@ async def test_steady_state_no_unbounded_growth() -> None:
     # 200s is unscripted and would KeyError, but the cancel fires first
     # because clock.now() == 200 >= 200 after the 100th tick's sleep.
     await _drive_until(loop, clock, WINDOW_OPEN + timedelta(seconds=200))
-    assert len(sink.decisions) == 100  # one picked per tick
-    assert all(d.kind == "picked" for d in sink.decisions)
+    assert sink.decisions == []  # no emit-style decisions on a steady stream
+    assert len(sink.scans) == 100  # one record_scan per tick
+    for _ts, picks, rejected in sink.scans:
+        assert len(picks) == 1
+        assert rejected == {}

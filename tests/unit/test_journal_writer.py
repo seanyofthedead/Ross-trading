@@ -30,7 +30,7 @@ from ross_trading.journal.models import (
     ScannerDecision as ScannerDecisionRow,
 )
 from ross_trading.journal.writer import JournalWriter
-from ross_trading.scanner.decisions import ScannerDecision
+from ross_trading.scanner.decisions import DecisionSink, ScannerDecision
 from ross_trading.scanner.types import ScannerPick
 
 if TYPE_CHECKING:
@@ -391,3 +391,17 @@ def test_rejection_reason_values_match_51_contract() -> None:
         f"RejectionReason vocabulary drifted: expected {expected}, got {actual}. "
         "This is the #51 contract; renaming requires a migration."
     )
+
+
+# =====================================================================
+# Issue #51 -- DecisionSink Protocol conformance
+# =====================================================================
+
+
+def test_journal_writer_satisfies_decision_sink_protocol(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Post-#51, DecisionSink requires both emit and record_scan.
+    JournalWriter must satisfy both."""
+    writer = JournalWriter(session_factory)
+    assert isinstance(writer, DecisionSink)

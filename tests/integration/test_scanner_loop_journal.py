@@ -171,3 +171,123 @@ async def test_scanner_loop_with_real_journal_writer_persists_stale_feed(
     assert row.pick_id is None
     assert row.reason is not None
     assert "stale" in row.reason
+
+
+# =====================================================================
+# Issue #51 -- end-to-end picks + rejections in one transaction
+# =====================================================================
+
+
+def _failing_snap_rel_volume(symbol: str, ts: datetime) -> ScannerSnapshot:
+    """Snapshot that fails the rel_volume filter (volume too low for 5x)."""
+    return ScannerSnapshot(
+        bar=Bar(
+            symbol=symbol, ts=ts, timeframe="M1",
+            open=Decimal("5.00"), high=Decimal("5.50"),
+            low=Decimal("4.95"), close=Decimal("5.50"),
+            volume=10_000,  # 0.01x baseline -> rel_volume reject
+        ),
+        last=Decimal("5.50"),
+        prev_close=Decimal("5.00"),
+        baseline_30d=Decimal("1000000"),
+        float_record=FloatRecord(
+            ticker=symbol, as_of=DAY, float_shares=8_500_000,
+            shares_outstanding=12_000_000, source="test",
+        ),
+        headlines=(),
+    )
+
+
+def _failing_snap_pct_change(symbol: str, ts: datetime) -> ScannerSnapshot:
+    """Snapshot that passes rel_volume but fails pct_change (+8% < 10% default)."""
+    return ScannerSnapshot(
+        bar=Bar(
+            symbol=symbol, ts=ts, timeframe="M1",
+            open=Decimal("5.00"), high=Decimal("5.40"),
+            low=Decimal("4.95"), close=Decimal("5.40"), volume=5_000_000,
+        ),
+        last=Decimal("5.40"),
+        prev_close=Decimal("5.00"),  # +8% < 10% threshold
+        baseline_30d=Decimal("1000000"),
+        float_record=FloatRecord(
+            ticker=symbol, as_of=DAY, float_shares=8_500_000,
+            shares_outstanding=12_000_000, source="test",
+        ),
+        headlines=(),
+    )
+
+
+async def test_scanner_loop_writes_picks_and_rejections_atomically(
+    engine: Engine,
+) -> None:
+    """One tick with mixed picks + rejections produces correct PICKED and
+    REJECTED rows in one transaction. Schema CHECK constraints (migration
+    0002) enforce field-population invariants per kind.
+    """
+    from ross_trading.journal.models import RejectionReason
+    session_factory = create_session_factory(engine)
+    writer = JournalWriter(session_factory)
+
+    snapshots = {
+        "GOOD": _snap("GOOD", WINDOW_OPEN),
+        "BAD_VOL": _failing_snap_rel_volume("BAD_VOL", WINDOW_OPEN),
+        "BAD_PCT": _failing_snap_pct_change("BAD_PCT", WINDOW_OPEN),
+    }
+    script = {WINDOW_OPEN: (snapshots, WINDOW_OPEN)}
+
+    clock = VirtualClock(WINDOW_OPEN)
+    upstream = FakeUniverseProvider({DAY: frozenset(["GOOD", "BAD_VOL", "BAD_PCT"])})
+    loop = ScannerLoop(
+        scanner=Scanner(),
+        universe_provider=CachedUniverseProvider(upstream, clock=clock),
+        snapshot_assembler=FakeSnapshotAssembler(script),
+        decision_sink=writer,
+        clock=clock,
+        tick_interval_s=2.0,
+        staleness_threshold_s=5.0,
+    )
+
+    task = asyncio.create_task(loop.run())
+    while clock.now() < WINDOW_OPEN + timedelta(seconds=2):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with session_factory() as session:
+        decisions = session.execute(
+            select(ScannerDecisionRow).order_by(ScannerDecisionRow.id)
+        ).scalars().all()
+        picks = session.execute(select(Pick)).scalars().all()
+
+    # 1 PICKED + 2 REJECTED = 3 decision rows; 1 Pick row.
+    assert len(decisions) == 3
+    assert len(picks) == 1
+    assert picks[0].ticker == "GOOD"
+
+    by_kind: dict[DecisionKind, list[ScannerDecisionRow]] = {d.kind: [] for d in decisions}
+    for d in decisions:
+        by_kind[d.kind].append(d)
+    assert set(by_kind) == {DecisionKind.PICKED, DecisionKind.REJECTED}
+    assert len(by_kind[DecisionKind.PICKED]) == 1
+    assert len(by_kind[DecisionKind.REJECTED]) == 2
+
+    # PICKED row invariants.
+    picked = by_kind[DecisionKind.PICKED][0]
+    assert picked.ticker == "GOOD"
+    assert picked.pick_id == picks[0].id
+    assert picked.rejection_reason is None
+
+    # REJECTED row invariants.
+    rejected_by_ticker = {d.ticker: d for d in by_kind[DecisionKind.REJECTED]}
+    assert set(rejected_by_ticker) == {"BAD_VOL", "BAD_PCT"}
+    assert rejected_by_ticker["BAD_VOL"].rejection_reason is RejectionReason.REL_VOLUME
+    assert rejected_by_ticker["BAD_PCT"].rejection_reason is RejectionReason.PCT_CHANGE
+    for r in by_kind[DecisionKind.REJECTED]:
+        assert r.pick_id is None
+        assert r.reason is None
+        assert r.gap_start is None
+        assert r.gap_end is None
+
+    # All three rows share the same decision_ts (one record_scan call).
+    assert {d.decision_ts for d in decisions} == {WINDOW_OPEN}
