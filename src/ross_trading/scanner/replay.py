@@ -367,8 +367,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Calendar day (YYYY-MM-DD) to replay.",
     )
     parser.add_argument(
-        "--recordings-dir", required=True, type=Path,
-        help="Recordings root: <recordings-dir>/<YYYY-MM-DD>/<event>.jsonl.gz",
+        "--source", required=True, type=Path, dest="recordings_dir",
+        metavar="DIR",
+        help="Recordings root: <DIR>/<YYYY-MM-DD>/<event>.jsonl.gz",
     )
     parser.add_argument(
         "--universe-dir", required=True, type=Path,
