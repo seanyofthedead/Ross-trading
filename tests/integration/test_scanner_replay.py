@@ -10,7 +10,7 @@ instead of hanging the busy-yield).
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, cast
 
@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from ross_trading.data.recorder import FeedRecorder
-from ross_trading.data.types import Bar, FloatRecord, Quote
+from ross_trading.data.types import Bar, FeedGap, FloatRecord, Quote
 from ross_trading.journal.engine import (
     create_journal_engine,
     create_session_factory,
@@ -237,11 +237,10 @@ async def test_replay_day_emits_stale_feed_when_quotes_age_past_threshold(
     that's older than the threshold and emit ``stale_feed`` -- the same
     decision the live loop would emit when its feed goes silent.
 
-    ``feed_gap`` is intentionally not exercised here: it only surfaces in
-    production when a ``ReconnectingProvider`` fires its ``on_gap``
-    callback, which replay's bare ``ReplayProvider`` doesn't have. The
-    replay driver carries no FeedGap source of its own -- a deterministic
-    recording has no reconnect events to reify.
+    ``feed_gap`` is exercised separately by
+    :func:`test_replay_day_emits_feed_gap_when_recorded`: it requires a
+    recorded ``FeedGap`` event in ``feed_gap.jsonl.gz`` and is orthogonal
+    to the staleness threshold the loop computes per tick.
     """
     recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
     await _record_passing_day(recordings, "AVTX")
@@ -328,3 +327,54 @@ async def test_replay_day_writes_rejected_decisions_to_journal(
         row.rejection_reason == RejectionReason.FLOAT_SIZE
         for row in rejected_rows
     )
+
+
+async def test_replay_day_emits_feed_gap_when_recorded(tmp_path: Path) -> None:
+    """#74 AC: replay must surface ``feed_gap`` decisions when the recording
+    captured a reconnect-induced gap.
+
+    A live recorder wired behind ``ReconnectingProvider(..., on_gap=rec.record_feed_gap)``
+    captures the gap window; the replay driver replays it onto the loop's
+    ``on_feed_gap`` callback at the recorded virtual-clock instant. The
+    journal should contain one ``feed_gap`` decision with ``gap_start`` /
+    ``gap_end`` matching the recorded values -- the same shape the live
+    loop writes when its production reconnect fires.
+    """
+    recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
+    await _record_passing_day(recordings, "AVTX")
+
+    gap = FeedGap(
+        symbol=None,
+        start=WINDOW_OPEN + timedelta(seconds=2),
+        end=WINDOW_OPEN + timedelta(seconds=4),
+        reason="upstream disconnect",
+    )
+    async with FeedRecorder(recordings) as rec:
+        rec.record_feed_gap(gap)
+
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        await replay_day(
+            day=DAY,
+            recordings_dir=recordings,
+            universe_dir=universe_dir,
+            journal_engine=engine,
+        )
+        session_factory = create_session_factory(engine)
+        with session_factory() as session:
+            gap_rows = session.execute(
+                select(ScannerDecisionRow).where(
+                    ScannerDecisionRow.kind == DecisionKind.FEED_GAP,
+                ),
+            ).scalars().all()
+    finally:
+        engine.dispose()
+
+    assert len(gap_rows) == 1
+    row = gap_rows[0]
+    assert row.ticker is None
+    assert row.rejection_reason is None
+    assert row.gap_start == gap.start
+    assert row.gap_end == gap.end
+    assert row.reason == gap.reason

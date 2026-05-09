@@ -13,7 +13,7 @@ from ross_trading.core.errors import MissingRecordingError
 from ross_trading.data.market_feed import Timeframe
 from ross_trading.data.providers.replay import ReplayMode, ReplayProvider
 from ross_trading.data.recorder import FeedRecorder
-from ross_trading.data.types import Bar, FloatRecord, Headline, Quote, Side, Tape
+from ross_trading.data.types import Bar, FeedGap, FloatRecord, Headline, Quote, Side, Tape
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -172,3 +172,68 @@ async def test_recorder_is_idempotent_on_double_close(tmp_path: Path) -> None:
     rec.record_quote(_quote("AVTX", 0, "1.00", "1.01"))
     await rec.close()
     await rec.close()  # must not raise
+
+
+async def test_feed_gap_roundtrip(tmp_path: Path) -> None:
+    """Recorder writes FeedGap events; replay yields them back unchanged.
+
+    Closes the FEED_GAP rung of #74's AC: the same recording format that
+    carries quotes/bars/etc. now also carries reconnect-induced gap events,
+    so a deterministic recording can faithfully replay a feed disconnect
+    that happened during the live capture session.
+    """
+    gap_one = FeedGap(
+        symbol=None,
+        start=T0,
+        end=T0 + timedelta(seconds=30),
+        reason="upstream disconnect",
+    )
+    gap_two = FeedGap(
+        symbol="AVTX",
+        start=T0 + timedelta(seconds=120),
+        end=T0 + timedelta(seconds=125),
+        reason="provider heartbeat lost",
+    )
+    async with FeedRecorder(tmp_path) as rec:
+        rec.record_feed_gap(gap_one)
+        rec.record_feed_gap(gap_two)
+
+    replay = ReplayProvider(tmp_path)
+    await replay.connect()
+    gaps: list[FeedGap] = [g async for g in replay.subscribe_feed_gaps()]
+    assert gaps == [gap_one, gap_two]
+
+
+async def test_feed_gap_filter_by_symbol(tmp_path: Path) -> None:
+    """``subscribe_feed_gaps(symbols=...)`` filters by symbol; ``None`` is global."""
+    global_gap = FeedGap(
+        symbol=None, start=T0, end=T0 + timedelta(seconds=10), reason="x",
+    )
+    avtx_gap = FeedGap(
+        symbol="AVTX",
+        start=T0 + timedelta(seconds=20),
+        end=T0 + timedelta(seconds=25),
+        reason="y",
+    )
+    bbai_gap = FeedGap(
+        symbol="BBAI",
+        start=T0 + timedelta(seconds=30),
+        end=T0 + timedelta(seconds=35),
+        reason="z",
+    )
+    async with FeedRecorder(tmp_path) as rec:
+        rec.record_feed_gap(global_gap)
+        rec.record_feed_gap(avtx_gap)
+        rec.record_feed_gap(bbai_gap)
+
+    replay = ReplayProvider(tmp_path)
+    await replay.connect()
+
+    # symbols=None yields every recorded gap regardless of its symbol field.
+    all_gaps = [g async for g in replay.subscribe_feed_gaps()]
+    assert all_gaps == [global_gap, avtx_gap, bbai_gap]
+
+    # symbols={"AVTX"} yields the global gap (symbol-less, always relevant)
+    # plus the AVTX-specific one. BBAI is filtered out.
+    avtx_gaps = [g async for g in replay.subscribe_feed_gaps(["AVTX"])]
+    assert avtx_gaps == [global_gap, avtx_gap]
