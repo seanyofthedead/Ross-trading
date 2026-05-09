@@ -17,11 +17,11 @@ The day boundary is America/New_York (matches the scanner's
 stored in tz-aware UTC are filtered against ``[YYYY-MM-DD 00:00 ET,
 +1d 00:00 ET)`` translated to UTC. DST is handled by zoneinfo.
 
-Pick.ticker is not normalized at the model layer today (a follow-up
-issue tracks enforcing ``.upper()`` at ``Pick.__init__``); this module
-defensively upper-cases the journal side of the join so a stray
-lowercase row doesn't silently miss against the ground truth, which A6
-already upper-cases on load.
+``Pick.ticker`` is enforced upper-case at the model layer (``Pick``'s
+``@validates("ticker")``, #58). This module keeps a defensive
+``.upper()`` on the journal side of the join as belt-and-braces; the
+model-layer normalization is the primary line of defence and the
+ground-truth side already upper-cases on load.
 """
 
 from __future__ import annotations
