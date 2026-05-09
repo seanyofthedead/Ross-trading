@@ -35,7 +35,7 @@ from sqlalchemy import (
     String,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from ross_trading.journal.types import DecimalText, TzAwareUTC
 
@@ -99,6 +99,13 @@ class Pick(Base):
 
     __table_args__ = (Index("ix_picks_ticker_ts", "ticker", "ts"),)
 
+    @validates("ticker")
+    def _normalize_ticker(self, _key: str, value: str) -> str:
+        # #58: enforce upper-case at the storage boundary so read sites
+        # joining against ground truth (already upper-cased on load) cannot
+        # silently miss a stray lowercase upstream.
+        return value.strip().upper()
+
 
 class WatchlistEntry(Base):
     """Open-ended watchlist membership for a :class:`Pick`.
@@ -129,6 +136,10 @@ class WatchlistEntry(Base):
             postgresql_where=text("removed_at IS NULL"),
         ),
     )
+
+    @validates("ticker")
+    def _normalize_ticker(self, _key: str, value: str) -> str:
+        return value.strip().upper()
 
 
 class ScannerDecision(Base):
@@ -197,3 +208,10 @@ class ScannerDecision(Base):
             name="ck_scanner_decisions_ticker_required",
         ),
     )
+
+    @validates("ticker")
+    def _normalize_ticker(self, _key: str, value: str | None) -> str | None:
+        # ``stale_feed`` and ``feed_gap`` decisions have ticker=None.
+        if value is None:
+            return None
+        return value.strip().upper()

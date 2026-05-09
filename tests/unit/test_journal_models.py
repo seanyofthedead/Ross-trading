@@ -297,3 +297,90 @@ def test_decision_kind_includes_reserved_rejected() -> None:
         "feed_gap",
         "rejected",
     }
+
+
+# ----- #58: enforce ticker normalization at the model layer ------------------
+#
+# Read sites that join journal rows against ground truth (already
+# upper-cased on load) rely on journal tickers being upper. The defensive
+# ``.upper()`` in ``build_daily_report`` keeps recall correct today but
+# pushes the burden onto every read site. These tests pin storage-layer
+# normalization so any future read site can trust the contract.
+
+
+def test_pick_normalizes_lowercase_ticker_to_upper(session: Session) -> None:
+    pick = _make_pick(ticker="abcd")
+    assert pick.ticker == "ABCD"  # normalized at __init__, before flush
+
+    session.add(pick)
+    session.commit()
+    fetched = session.get(Pick, pick.id)
+    assert fetched is not None
+    assert fetched.ticker == "ABCD"
+
+
+def test_pick_strips_whitespace_from_ticker() -> None:
+    pick = _make_pick(ticker="  abcd\t")
+    assert pick.ticker == "ABCD"
+
+
+def test_pick_normalizes_ticker_on_assignment() -> None:
+    pick = _make_pick(ticker="ABCD")
+    pick.ticker = "wxyz"
+    assert pick.ticker == "WXYZ"
+
+
+def test_watchlist_entry_normalizes_ticker(session: Session) -> None:
+    pick = _make_pick()
+    session.add(pick)
+    session.flush()
+
+    entry = WatchlistEntry(
+        ticker="abcd",
+        pick_id=pick.id,
+        added_at=datetime(2026, 5, 2, 14, 31, tzinfo=UTC),
+    )
+    assert entry.ticker == "ABCD"
+
+    session.add(entry)
+    session.commit()
+    fetched = session.get(WatchlistEntry, entry.id)
+    assert fetched is not None
+    assert fetched.ticker == "ABCD"
+
+
+def test_decision_normalizes_ticker_when_present(session: Session) -> None:
+    pick = _make_pick()
+    session.add(pick)
+    session.flush()
+
+    decision = ScannerDecision(
+        kind=DecisionKind.PICKED,
+        decision_ts=datetime(2026, 5, 2, 14, 30, tzinfo=UTC),
+        ticker="abcd",
+        pick_id=pick.id,
+    )
+    assert decision.ticker == "ABCD"
+
+    session.add(decision)
+    session.commit()
+    fetched = session.get(ScannerDecision, decision.id)
+    assert fetched is not None
+    assert fetched.ticker == "ABCD"
+
+
+def test_decision_passes_none_ticker_through(session: Session) -> None:
+    """``stale_feed`` and ``feed_gap`` decisions have ``ticker=None``."""
+    decision = ScannerDecision(
+        kind=DecisionKind.STALE_FEED,
+        decision_ts=datetime(2026, 5, 2, 14, 30, tzinfo=UTC),
+        ticker=None,
+        reason="stale",
+    )
+    assert decision.ticker is None
+
+    session.add(decision)
+    session.commit()
+    fetched = session.get(ScannerDecision, decision.id)
+    assert fetched is not None
+    assert fetched.ticker is None
