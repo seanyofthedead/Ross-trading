@@ -10,6 +10,7 @@ import pytest
 
 from ross_trading.data.cache import HistoricalCache
 from ross_trading.data.historical import (
+    populate_daily_bars,
     populate_daily_volumes,
     precompute_daily_emas,
 )
@@ -33,6 +34,22 @@ def _bar(symbol: str, day_offset: int, close: str, volume: int) -> Bar:
         high=Decimal(close),
         low=Decimal(close),
         close=Decimal(close),
+        volume=volume,
+    )
+
+
+def _ohlc_bar(
+    symbol: str, day_offset: int, *, high: str, low: str, volume: int = 1_000
+) -> Bar:
+    ts = T0 - timedelta(days=day_offset)
+    return Bar(
+        symbol=symbol,
+        ts=ts,
+        timeframe="D1",
+        open=Decimal(low),
+        high=Decimal(high),
+        low=Decimal(low),
+        close=Decimal(low),
         volume=volume,
     )
 
@@ -112,4 +129,27 @@ async def test_precompute_daily_emas_persists_all_periods(tmp_path: Path) -> Non
     assert val_20 is not None
     assert val_50 is not None
     assert val_200 is not None
+    cache.close()
+
+
+async def test_populate_daily_bars_writes_high_low_per_day(tmp_path: Path) -> None:
+    """Issue #73: cache the (high, low) per day so the strength filter can
+    compute multi-month resistance and 52-week-low aggregates."""
+    bars = [
+        _ohlc_bar("AVTX", offset, high=str(10 + offset), low=str(5 + offset))
+        for offset in range(40)
+    ]
+    provider = FakeMarketDataProvider(bars=bars)
+    cache = HistoricalCache(tmp_path / "h.sqlite")
+    written = await populate_daily_bars(
+        provider, "AVTX", end_inclusive=T0.date(), cache=cache, history_days=40
+    )
+    assert written == 40
+    # Cache method is end-inclusive (matches `avg_daily_volume`'s semantics);
+    # callers exclude today by passing `prior_day` if they need to.
+    # Last 30 rows are offsets 0..29: highs 10..39, lows 5..34.
+    high = cache.max_high("AVTX", T0.date(), lookback_days=30)
+    low = cache.min_low("AVTX", T0.date(), lookback_days=30)
+    assert high == Decimal("39")
+    assert low == Decimal("5")
     cache.close()

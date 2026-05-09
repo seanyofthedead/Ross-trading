@@ -42,6 +42,27 @@ async def populate_daily_volumes(
     return len(bars)
 
 
+async def populate_daily_bars(
+    provider: MarketDataProvider,
+    symbol: str,
+    end_inclusive: date,
+    cache: HistoricalCache,
+    history_days: int = 252,
+) -> int:
+    """Fetch daily bars for *symbol* and persist ``(high, low)`` per day.
+
+    Backs the multi-month-resistance and 52-week-low aggregates the
+    daily-strength filter (§3.3) reads via ``cache.max_high`` /
+    ``cache.min_low``. Default ``history_days=252`` covers a full
+    trading year so the 52-week-low aggregate is always meaningful.
+
+    Returns the number of rows written.
+    """
+    bars = await _fetch_daily_bars(provider, symbol, end_inclusive, history_days)
+    cache.record_daily_bars((b.symbol, b.ts.date(), b.high, b.low) for b in bars)
+    return len(bars)
+
+
 async def precompute_daily_emas(
     provider: MarketDataProvider,
     symbol: str,

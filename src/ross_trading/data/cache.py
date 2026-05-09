@@ -1,11 +1,14 @@
 """SQLite-backed historical-data cache.
 
-Two tables:
+Three tables:
 
 * ``daily_volumes(symbol, as_of, volume)`` — one row per (symbol, day);
   feeds 30-day relative-volume calculations (architecture §3.1).
 * ``daily_emas(symbol, as_of, period, value)`` — one row per
   (symbol, day, period); feeds the daily-strength filter (§3.3).
+* ``daily_bars(symbol, as_of, high, low)`` — one row per (symbol, day);
+  feeds rolling multi-month resistance and 52-week-low aggregates for
+  the breakout / turnaround flags (§3.3, issue #73).
 
 The store is opened in WAL mode so concurrent readers don't block
 writers. Decimal values are persisted as strings to preserve precision.
@@ -36,6 +39,13 @@ CREATE TABLE IF NOT EXISTS daily_emas (
     period INTEGER NOT NULL,
     value TEXT NOT NULL,
     PRIMARY KEY (symbol, as_of, period)
+);
+CREATE TABLE IF NOT EXISTS daily_bars (
+    symbol TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    high TEXT NOT NULL,
+    low TEXT NOT NULL,
+    PRIMARY KEY (symbol, as_of)
 );
 """
 
@@ -163,5 +173,97 @@ class HistoricalCache:
             row = cur.execute(
                 "SELECT value FROM daily_emas WHERE symbol = ? AND as_of = ? AND period = ?",
                 (symbol.upper(), as_of.isoformat(), int(period)),
+            ).fetchone()
+        return Decimal(row[0]) if row is not None else None
+
+    def record_daily_bar(
+        self,
+        symbol: str,
+        as_of: date,
+        high: Decimal,
+        low: Decimal,
+    ) -> None:
+        with closing(self._conn.cursor()) as cur:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO daily_bars(symbol, as_of, high, low)
+                VALUES (?, ?, ?, ?)
+                """,
+                (symbol.upper(), as_of.isoformat(), str(high), str(low)),
+            )
+        self._conn.commit()
+
+    def record_daily_bars(
+        self,
+        rows: Iterable[tuple[str, date, Decimal, Decimal]],
+    ) -> None:
+        materialized = [
+            (s.upper(), d.isoformat(), str(h), str(low)) for s, d, h, low in rows
+        ]
+        if not materialized:
+            return
+        with closing(self._conn.cursor()) as cur:
+            cur.executemany(
+                """
+                INSERT OR REPLACE INTO daily_bars(symbol, as_of, high, low)
+                VALUES (?, ?, ?, ?)
+                """,
+                materialized,
+            )
+        self._conn.commit()
+
+    def max_high(
+        self,
+        symbol: str,
+        end_inclusive: date,
+        lookback_days: int,
+    ) -> Decimal | None:
+        """Highest ``high`` over the last ``lookback_days`` rows ending at ``end_inclusive``.
+
+        Returns ``None`` when no rows fall in the window. Trailing-window
+        semantics match :meth:`avg_daily_volume` — callers exclude today
+        themselves by passing ``prior_day = end - 1`` if needed.
+        """
+        return self._extreme_high_low(symbol, end_inclusive, lookback_days, kind="max")
+
+    def min_low(
+        self,
+        symbol: str,
+        end_inclusive: date,
+        lookback_days: int,
+    ) -> Decimal | None:
+        """Lowest ``low`` over the last ``lookback_days`` rows ending at ``end_inclusive``.
+
+        Same windowing semantics as :meth:`max_high`.
+        """
+        return self._extreme_high_low(symbol, end_inclusive, lookback_days, kind="min")
+
+    def _extreme_high_low(
+        self,
+        symbol: str,
+        end_inclusive: date,
+        lookback_days: int,
+        *,
+        kind: str,
+    ) -> Decimal | None:
+        if lookback_days <= 0:
+            msg = "lookback_days must be positive"
+            raise ValueError(msg)
+        column = "high" if kind == "max" else "low"
+        order = "DESC" if kind == "max" else "ASC"
+        with closing(self._conn.cursor()) as cur:
+            row = cur.execute(
+                f"""
+                SELECT {column}
+                FROM (
+                    SELECT {column} FROM daily_bars
+                    WHERE symbol = ? AND as_of <= ?
+                    ORDER BY as_of DESC
+                    LIMIT ?
+                )
+                ORDER BY CAST({column} AS REAL) {order}
+                LIMIT 1
+                """,  # noqa: S608 — column/order are class-internal literals, not user input.
+                (symbol.upper(), end_inclusive.isoformat(), lookback_days),
             ).fetchone()
         return Decimal(row[0]) if row is not None else None
