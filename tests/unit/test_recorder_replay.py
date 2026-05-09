@@ -204,6 +204,52 @@ async def test_feed_gap_roundtrip(tmp_path: Path) -> None:
     assert gaps == [gap_one, gap_two]
 
 
+async def test_feed_gap_realtime_pacing_anchors_on_gap_end(
+    tmp_path: Path,
+) -> None:
+    """REALTIME mode must pace gap delivery to ``gap.end``, not ``gap.start``.
+
+    Live ``ReconnectingProvider`` invokes ``on_gap`` only after reconnect
+    completes -- the callback wall-clock time is approximately ``gap.end``,
+    not ``gap.start``. A consumer paced on ``gap.start`` would receive each
+    recorded disconnect a full duration too early and write downstream
+    decisions before the live loop would have. Pacing on ``gap.end``
+    matches the live timeline.
+    """
+    gap_one = FeedGap(
+        symbol=None,
+        start=T0,
+        end=T0 + timedelta(seconds=10),
+        reason="one",
+    )
+    gap_two = FeedGap(
+        symbol=None,
+        start=T0 + timedelta(seconds=20),
+        end=T0 + timedelta(seconds=40),
+        reason="two",
+    )
+    async with FeedRecorder(tmp_path) as rec:
+        rec.record_feed_gap(gap_one)
+        rec.record_feed_gap(gap_two)
+
+    clock = VirtualClock(T0)
+    replay = ReplayProvider(tmp_path, mode=ReplayMode.REALTIME, clock=clock)
+    await replay.connect()
+
+    real = RealClock()
+    real_t0 = real.monotonic()
+    out = [g async for g in replay.subscribe_feed_gaps()]
+    real_elapsed = real.monotonic() - real_t0
+
+    # Gap ends at +10s and +40s. Pacing on gap.end means the virtual clock
+    # advances 30s between the two yields. If pacing anchored on gap.start
+    # (offsets 0s and 20s) it would advance only 20s -- the assertion below
+    # would catch that off-by-a-duration error.
+    assert clock.monotonic() == pytest.approx(30.0, abs=0.01)
+    assert real_elapsed < 0.5
+    assert out == [gap_one, gap_two]
+
+
 async def test_feed_gap_filter_by_symbol(tmp_path: Path) -> None:
     """``subscribe_feed_gaps(symbols=...)`` filters by symbol; ``None`` is global."""
     global_gap = FeedGap(

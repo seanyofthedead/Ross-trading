@@ -12,7 +12,7 @@
 4. Drives the loop over the day's recorded event span (plus a tail pad), propagating any task exception, then cancels.
 5. Writes nothing to stdout besides one summary line per day (`day, picks, decisions, runtime`).
 
-The driver is the only new module — `Scanner`, `ScannerLoop`, `JournalWriter`, and `ReplayProvider` are reused as-is. `data/recorder.py` is not touched (this atom only consumes recordings; writing them is out of scope).
+The driver is the only new module — `Scanner`, `ScannerLoop`, and `JournalWriter` are reused as-is. `ReplayProvider` and `data/recorder.py` were originally out of scope for this atom but were extended by PR #86 to close the FEED_GAP rung of the AC: the recorder gained `record_feed_gap` (so the live capture path can persist reconnect events behind a `ReconnectingProvider(..., on_gap=recorder.record_feed_gap)` wiring), and `ReplayProvider` gained `subscribe_feed_gaps` (so the driver can replay those events). Both extensions are additive and the rest of the original scope (no `Scanner`/`ScannerLoop`/`JournalWriter` changes) still holds.
 
 **Tech Stack:** Python 3.11, `asyncio`, `decimal.Decimal`, raw `sqlite3` for the analytic cache, SQLAlchemy 2.x for the journal, mypy `--strict`, ruff, pytest with `asyncio_mode = "auto"`.
 
@@ -46,8 +46,11 @@ The driver is the only new module — `Scanner`, `ScannerLoop`, `JournalWriter`,
 |---|---|---|
 | Create | `src/ross_trading/scanner/replay.py` | `replay_day` async function, in-memory assembler, CLI entry point. |
 | Create | `tests/integration/test_scanner_replay.py` | End-to-end smoke + idempotency + crash-propagation assertions. |
+| Modify | `src/ross_trading/data/_codec.py` | `EventType.FEED_GAP` + `encode_feed_gap` / `decode_feed_gap` (added by PR #86 for the FEED_GAP AC rung). |
+| Modify | `src/ross_trading/data/recorder.py` | `record_feed_gap` (added by PR #86; lets the live capture path persist reconnect events). |
+| Modify | `src/ross_trading/data/providers/replay.py` | `subscribe_feed_gaps` (added by PR #86; lets the driver replay recorded gaps). |
 
-No changes to `Scanner`, `ScannerLoop`, `JournalWriter`, or `ReplayProvider` — that's the atom's discipline. No journal migration: idempotency is enforced at the driver level via pre-flight DELETE rather than a schema constraint (see decisions above).
+No changes to `Scanner`, `ScannerLoop`, or `JournalWriter` — that's the atom's discipline. `ReplayProvider` and `data/recorder.py` were originally listed as out-of-scope and were extended by PR #86 to close the FEED_GAP AC rung; both extensions are additive (recordings without `feed_gap.jsonl.gz` produce an empty stream and behave as before). No journal migration: idempotency is enforced at the driver level via pre-flight DELETE rather than a schema constraint (see decisions above).
 
 ## Key Interfaces
 

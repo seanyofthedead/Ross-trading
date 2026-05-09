@@ -424,6 +424,16 @@ async def replay_day(
         )
     start, last_event = bounds
     end = last_event + _REPLAY_TAIL_PAD
+    if feed_gaps:
+        # Make sure the busy-yield runs at least one tick past the latest
+        # recorded gap close, so the in-loop dispatch fires it at virtual
+        # time ``gap.end`` (decision_ts is stamped from clock.now() inside
+        # on_feed_gap). Without this, a gap whose end falls outside the
+        # event-derived window would either be missed entirely or, with a
+        # post-loop tail flush, be journaled at last_event + pad rather
+        # than the recorded reconnect time.
+        latest_gap_end = max(g.end for g in feed_gaps)
+        end = max(end, latest_gap_end + timedelta(seconds=tick_interval_s))
 
     clock = VirtualClock(start)
     session_factory = create_session_factory(journal_engine)
@@ -450,9 +460,12 @@ async def replay_day(
                 break
             # Fire any recorded gaps whose end has been reached. Dispatch
             # is monotonic in ``gap.end`` so the journal preserves the live
-            # ordering of feed_gap rows. ``on_feed_gap`` is sync and the
-            # event loop serializes it with ``_tick`` -- same contract the
-            # production reconnect path relies on.
+            # ordering of feed_gap rows, and decision_ts (stamped via
+            # ``clock.now()`` inside ``on_feed_gap``) lands at the recorded
+            # reconnect time rather than at the busy-yield exit boundary.
+            # ``on_feed_gap`` is sync and the event loop serializes it with
+            # ``_tick`` -- same contract the production reconnect path
+            # relies on.
             while gap_idx < len(feed_gaps) and feed_gaps[gap_idx].end <= clock.now():
                 loop.on_feed_gap(feed_gaps[gap_idx])
                 gap_idx += 1
@@ -462,14 +475,6 @@ async def replay_day(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-
-    # Tail flush. The recording may end before every gap closes within
-    # the busy-yield window (e.g., a gap whose end falls inside the
-    # ``_REPLAY_TAIL_PAD``). Fire the rest now so the journal carries the
-    # complete decision stream the live loop would have written.
-    while gap_idx < len(feed_gaps):
-        loop.on_feed_gap(feed_gaps[gap_idx])
-        gap_idx += 1
 
     picks_count, decisions_count = _journal_summary(journal_engine, day)
     return ReplaySummary(

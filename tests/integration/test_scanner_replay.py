@@ -378,3 +378,60 @@ async def test_replay_day_emits_feed_gap_when_recorded(tmp_path: Path) -> None:
     assert row.gap_start == gap.start
     assert row.gap_end == gap.end
     assert row.reason == gap.reason
+
+
+async def test_replay_day_emits_late_feed_gap_with_correct_decision_ts(
+    tmp_path: Path,
+) -> None:
+    """Gaps closing past ``last_event + _REPLAY_TAIL_PAD`` still fire at gap.end.
+
+    Locks in the dispatch contract: ``decision_ts`` is the recorded
+    reconnect time (``gap.end``), not the busy-yield exit boundary. The
+    only intraday event in the fixture is at ``WINDOW_OPEN``, so the
+    event-derived end is ``WINDOW_OPEN + 10s``; the gap closes at +30s,
+    well outside that window. The driver must extend its busy-yield to
+    cover the gap and dispatch it through the in-loop path so
+    ``ScannerLoop.on_feed_gap`` stamps ``decision_ts`` from a virtual
+    clock that has actually advanced to ``gap.end``.
+    """
+    recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
+    await _record_passing_day(recordings, "AVTX")
+
+    gap = FeedGap(
+        symbol=None,
+        start=WINDOW_OPEN + timedelta(seconds=20),
+        end=WINDOW_OPEN + timedelta(seconds=30),
+        reason="late reconnect",
+    )
+    async with FeedRecorder(recordings) as rec:
+        rec.record_feed_gap(gap)
+
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        await replay_day(
+            day=DAY,
+            recordings_dir=recordings,
+            universe_dir=universe_dir,
+            journal_engine=engine,
+            tick_interval_s=2.0,
+        )
+        session_factory = create_session_factory(engine)
+        with session_factory() as session:
+            gap_rows = session.execute(
+                select(ScannerDecisionRow).where(
+                    ScannerDecisionRow.kind == DecisionKind.FEED_GAP,
+                ),
+            ).scalars().all()
+    finally:
+        engine.dispose()
+
+    assert len(gap_rows) == 1
+    row = gap_rows[0]
+    assert row.gap_start == gap.start
+    assert row.gap_end == gap.end
+    # decision_ts must land at -- or within one tick of -- gap.end. The
+    # busy-yield exit boundary (last_event + _REPLAY_TAIL_PAD = +10s) is
+    # well inside the previous-tick window, so a regression to the prior
+    # tail-flush behavior would put decision_ts there instead.
+    assert gap.end <= row.decision_ts <= gap.end + timedelta(seconds=2.5)

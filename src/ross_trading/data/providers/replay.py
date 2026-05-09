@@ -191,6 +191,13 @@ class ReplayProvider:
         (``FeedGap.symbol is None`` -- always relevant) plus any gap whose
         ``symbol`` is in the set; symbol-scoped gaps for tickers outside
         the set are skipped.
+
+        REALTIME pacing anchors on ``gap.end``, not ``gap.start``: in
+        production ``ReconnectingProvider`` invokes its ``on_gap`` callback
+        only after reconnect/backfill completes -- i.e., wall-clock time at
+        the callback site is approximately ``gap.end``. Pacing on
+        ``gap.start`` would yield each gap a full duration earlier than the
+        live consumer would have seen it.
         """
         wanted = None if symbols is None else {s.upper() for s in symbols}
         anchor = _Anchor()
@@ -203,7 +210,7 @@ class ReplayProvider:
                 and gap.symbol.upper() not in wanted
             ):
                 continue
-            await self._maybe_pace(gap.start, anchor)
+            await self._maybe_pace(gap.end, anchor)
             yield gap
 
     async def get_float(self, ticker: str, as_of: date) -> FloatRecord:
