@@ -132,6 +132,41 @@ async def test_precompute_daily_emas_persists_all_periods(tmp_path: Path) -> Non
     cache.close()
 
 
+async def test_populate_daily_bars_default_covers_full_trading_year(tmp_path: Path) -> None:
+    """The default ``history_days`` must produce ≥252 trading rows in the cache,
+    so the 52-week-low aggregate ``score_daily_strength`` reads is real, not
+    truncated to ~180 sessions because we asked for 252 calendar days.
+    """
+    # Generate weekday-only bars covering 2 calendar years (well past the 380-day
+    # default) so we can confirm the default produces ≥252 trading-day rows.
+    weekday_bars: list[Bar] = []
+    cursor = T0 - timedelta(days=2 * 365)
+    while cursor <= T0:
+        if cursor.weekday() < 5:  # Mon-Fri only
+            weekday_bars.append(
+                Bar(
+                    symbol="AVTX",
+                    ts=cursor,
+                    timeframe="D1",
+                    open=Decimal("10"),
+                    high=Decimal("10"),
+                    low=Decimal("10"),
+                    close=Decimal("10"),
+                    volume=1_000,
+                )
+            )
+        cursor += timedelta(days=1)
+    provider = FakeMarketDataProvider(bars=weekday_bars)
+    cache = HistoricalCache(tmp_path / "h.sqlite")
+
+    written = await populate_daily_bars(provider, "AVTX", end_inclusive=T0.date(), cache=cache)
+
+    # Default is calendar-day-based; weekday-only filtering of a ~380-day window
+    # should still leave well over 252 trading rows in the cache.
+    assert written >= 252
+    cache.close()
+
+
 async def test_populate_daily_bars_writes_high_low_per_day(tmp_path: Path) -> None:
     """Issue #73: cache the (high, low) per day so the strength filter can
     compute multi-month resistance and 52-week-low aggregates."""

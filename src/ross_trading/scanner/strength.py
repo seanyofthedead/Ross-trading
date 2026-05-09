@@ -76,19 +76,23 @@ def score_daily_strength(
     EMA rows are present; ``None`` flags contribute 0. Score is ``None``
     when any EMA row is missing.
 
-    Parameters tune the breakout / turnaround thresholds:
+    Parameters tune the breakout / turnaround thresholds. All ``*_days``
+    arguments here are *trading-row* counts — ``HistoricalCache``
+    aggregates apply ``LIMIT N`` to rows ordered by ``as_of DESC``, so
+    one row per trading day is the operative unit. Calendar-vs-trading
+    conversion happens upstream in ``populate_daily_bars``.
 
-    * ``breakout_lookback_days`` — trailing window (calendar days) for
-      the rolling resistance high. Default ~3 trading months.
-    * ``turnaround_lookback_days`` — trailing window for the 52-week
-      low. Default ~one trading year.
+    * ``breakout_lookback_days`` — trailing rows for the rolling
+      resistance high. Default 66 ≈ 3 trading months.
+    * ``turnaround_lookback_days`` — trailing rows for the 52-week low.
+      Default 252 ≈ one trading year.
     * ``near_52w_low_pct`` — close qualifies as "near" the 52-week low
       when ``close <= min_low * (1 + pct)``. Default 10%.
     * ``reversal_volume_ratio`` — today's volume must be at least this
       multiple of the prior 30-day average for "reversal volume".
       Default 2x.
-    * ``avg_volume_lookback_days`` — window for the average-volume
-      denominator. Default 30 days.
+    * ``avg_volume_lookback_days`` — trailing rows for the average-volume
+      denominator. Default 30.
     """
     above = {
         period: None if (ema := cache.ema(symbol, as_of, period)) is None
