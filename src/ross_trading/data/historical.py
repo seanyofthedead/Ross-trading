@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 
 DEFAULT_VOLUME_LOOKBACK = 30
 DEFAULT_EMA_PERIODS: tuple[int, ...] = (20, 50, 200)
+# Calendar-day window that comfortably contains 252 trading sessions
+# (one trading year). 252 * 7/5 ≈ 353 calendar days; +10 holidays +
+# weekend buffer puts us at ~380. Used by populate_daily_bars so the
+# 52-week-low aggregate consumed by score_daily_strength has a full
+# trading year of rows.
+DEFAULT_BARS_HISTORY_CALENDAR_DAYS = 380
 
 
 async def populate_daily_volumes(
@@ -39,6 +45,35 @@ async def populate_daily_volumes(
     """
     bars = await _fetch_daily_bars(provider, symbol, end_inclusive, lookback_days + 5)
     cache.record_daily_volumes((b.symbol, b.ts.date(), b.volume) for b in bars)
+    return len(bars)
+
+
+async def populate_daily_bars(
+    provider: MarketDataProvider,
+    symbol: str,
+    end_inclusive: date,
+    cache: HistoricalCache,
+    history_days: int = DEFAULT_BARS_HISTORY_CALENDAR_DAYS,
+) -> int:
+    """Fetch daily bars for *symbol* and persist ``(high, low)`` per day.
+
+    Backs the multi-month-resistance and 52-week-low aggregates the
+    daily-strength filter (§3.3) reads via ``cache.max_high`` /
+    ``cache.min_low``.
+
+    ``history_days`` is in **calendar days** (the parameter is passed
+    through to ``provider.historical_bars`` as a date-window). Markets
+    are closed on weekends and holidays, so a calendar-day request of
+    *N* yields roughly ``N * 5/7`` trading bars. The default
+    (``DEFAULT_BARS_HISTORY_CALENDAR_DAYS = 380``) is sized to cover at
+    least 252 trading sessions — the 52-week-low window
+    ``score_daily_strength`` reads from the cache. Pass a larger value
+    if a downstream consumer needs a longer history.
+
+    Returns the number of rows written.
+    """
+    bars = await _fetch_daily_bars(provider, symbol, end_inclusive, history_days)
+    cache.record_daily_bars((b.symbol, b.ts.date(), b.high, b.low) for b in bars)
     return len(bars)
 
 
