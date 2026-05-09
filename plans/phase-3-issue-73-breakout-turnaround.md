@@ -62,7 +62,7 @@ async def populate_daily_bars(
     symbol: str,
     end_inclusive: date,
     cache: HistoricalCache,
-    history_days: int = 252,
+    history_days: int = DEFAULT_BARS_HISTORY_CALENDAR_DAYS,  # 380 calendar days
 ) -> int: ...
 
 
@@ -107,7 +107,12 @@ No integration test in this atom — the scanner-side wiring atom owns end-to-en
 ## Defects / Open Questions
 
 - **Where do thresholds live long-term?** `near_52w_low_pct` and `reversal_volume_ratio` are operational thresholds without a clean home today. They live as `score_daily_strength` parameters with documented defaults; if the scanner consumer needs to A/B test them, we can route them through the consumer's config.
-- **Trading-day vs calendar-day rolling windows.** `lookback_days` here is calendar days (the cache stores rows by `as_of` and the SQL `LIMIT N` returns the last N rows present, which approximates trading days when only weekday rows exist). This matches `avg_daily_volume`'s semantics. If the cache is ever populated with weekend rows, the windows widen — same caveat as existing avg-volume.
+
+## Resolved During Implementation
+
+- **Trading-day vs calendar-day rolling windows.** Resolved by review-feedback fix `ea37851`. Two layers, two units:
+  - `score_daily_strength`'s `*_lookback_days` parameters count **trading rows** in the cache. The SQL applies `LIMIT N` on rows ordered by `as_of DESC`, so when only weekday rows are populated (the live + replay path), 252 means 252 trading sessions. Documented in the function's docstring.
+  - `populate_daily_bars`'s `history_days` parameter is **calendar days** (passed through to `provider.historical_bars` as a date window). The default is `DEFAULT_BARS_HISTORY_CALENDAR_DAYS = 380` — 252 × 7/5 ≈ 353, plus ~10 holidays plus weekend buffer — sized so the resulting weekday-only rows comfortably cover the 252-row 52-week-low window. Pinned by `tests/unit/test_historical.py::test_populate_daily_bars_default_covers_full_trading_year`.
 
 ## Conventions
 
