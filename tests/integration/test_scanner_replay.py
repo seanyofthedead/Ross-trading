@@ -23,7 +23,13 @@ from ross_trading.journal.engine import (
     create_journal_engine,
     create_session_factory,
 )
-from ross_trading.journal.models import Base, Pick
+from ross_trading.journal.models import (
+    Base,
+    DecisionKind,
+    Pick,
+    RejectionReason,
+)
+from ross_trading.journal.models import ScannerDecision as ScannerDecisionRow
 from ross_trading.scanner.replay import replay_day
 
 if TYPE_CHECKING:
@@ -72,6 +78,44 @@ async def _record_passing_day(recordings_dir: Path, ticker: str) -> None:
         rec.record_float(FloatRecord(
             ticker=ticker, as_of=DAY,
             float_shares=8_500_000, shares_outstanding=12_000_000,
+            source="test",
+        ))
+
+
+async def _record_big_float_day(recordings_dir: Path, ticker: str) -> None:
+    """Lay down a recording for a ticker that fails only the float-size filter.
+
+    Same shape as :func:`_record_passing_day` but with a 50M-share float, so
+    the scanner walks the AND-chain past every other check and rejects with
+    ``float_size`` (the last filter). Lets us assert the rejected decision
+    stream surfaces through replay end-to-end (#74 AC: same decision stream
+    as the live loop, including REJECTED post-#51).
+    """
+    async with FeedRecorder(recordings_dir) as rec:
+        rec.record_bar(Bar(
+            symbol=ticker,
+            ts=datetime(
+                PREV_TRADING_DAY.year, PREV_TRADING_DAY.month, PREV_TRADING_DAY.day,
+                21, 0, tzinfo=UTC,
+            ),
+            timeframe="D1",
+            open=Decimal("5.00"), high=Decimal("5.00"),
+            low=Decimal("5.00"), close=Decimal("5.00"),
+            volume=1_000_000,
+        ))
+        rec.record_bar(Bar(
+            symbol=ticker, ts=WINDOW_OPEN, timeframe="M1",
+            open=Decimal("5.00"), high=Decimal("5.55"),
+            low=Decimal("4.95"), close=Decimal("5.50"), volume=5_000_000,
+        ))
+        rec.record_quote(Quote(
+            symbol=ticker, ts=WINDOW_OPEN,
+            bid=Decimal("5.49"), ask=Decimal("5.51"),
+            bid_size=500, ask_size=500,
+        ))
+        rec.record_float(FloatRecord(
+            ticker=ticker, as_of=DAY,
+            float_shares=50_000_000, shares_outstanding=80_000_000,
             source="test",
         ))
 
@@ -178,3 +222,59 @@ async def test_replay_day_propagates_loop_exception(tmp_path: Path) -> None:
             )
     finally:
         engine.dispose()
+
+
+async def test_replay_day_writes_rejected_decisions_to_journal(
+    tmp_path: Path,
+) -> None:
+    """#74 AC: replay must surface ``rejected`` decisions, not just ``picked``.
+
+    Universe = {AVTX (passes every filter), BIGFLT (passes every filter
+    except ``float_size``)}. After replay the journal must contain at
+    least one decision of each kind, with BIGFLT's rejection carrying
+    ``rejection_reason=FLOAT_SIZE`` -- the live-loop's
+    first-failing-filter contract from #51 carrying through the replay
+    path unchanged.
+    """
+    recordings = tmp_path / "recordings"
+    universe_dir = tmp_path / "universe"
+    universe_dir.mkdir()
+    (universe_dir / f"{DAY.isoformat()}.json").write_text(
+        json.dumps(["AVTX", "BIGFLT"]), encoding="utf-8",
+    )
+    await _record_passing_day(recordings, "AVTX")
+    await _record_big_float_day(recordings, "BIGFLT")
+
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        summary = await replay_day(
+            day=DAY,
+            recordings_dir=recordings,
+            universe_dir=universe_dir,
+            journal_engine=engine,
+        )
+        session_factory = create_session_factory(engine)
+        with session_factory() as session:
+            picked_rows = session.execute(
+                select(ScannerDecisionRow).where(
+                    ScannerDecisionRow.kind == DecisionKind.PICKED,
+                ),
+            ).scalars().all()
+            rejected_rows = session.execute(
+                select(ScannerDecisionRow).where(
+                    ScannerDecisionRow.kind == DecisionKind.REJECTED,
+                ),
+            ).scalars().all()
+    finally:
+        engine.dispose()
+
+    assert summary.decisions_emitted >= 2
+    assert len(picked_rows) >= 1
+    assert len(rejected_rows) >= 1
+    assert {row.ticker for row in picked_rows} == {"AVTX"}
+    assert {row.ticker for row in rejected_rows} == {"BIGFLT"}
+    assert all(
+        row.rejection_reason == RejectionReason.FLOAT_SIZE
+        for row in rejected_rows
+    )
