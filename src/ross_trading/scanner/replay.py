@@ -33,6 +33,15 @@ of the two options that's compatible with how the loop actually writes.
 Synthetic-tick fallback (the issue's "no recordings" risk) is reserved
 for a follow-up atom. Today, if ``recordings_dir`` has no events for
 ``day`` the assembler returns empty bounds and the journal stays clean.
+
+FEED_GAP decisions don't surface from replay. A live loop reifies them
+via ``ReconnectingProvider(upstream, on_gap=loop.on_feed_gap)`` (see
+``ScannerLoop.on_feed_gap``); the bare :class:`ReplayProvider` used here
+has no ``on_gap`` callback because a deterministic recording has no
+reconnect events to model. STALE_FEED still surfaces naturally -- the
+loop fires it whenever ``anchor_ts - latest_quote_ts`` exceeds
+``staleness_threshold_s``, which happens during the
+``_REPLAY_TAIL_PAD`` window after the recording's last quote.
 """
 
 from __future__ import annotations

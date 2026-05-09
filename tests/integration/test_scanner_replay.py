@@ -224,6 +224,56 @@ async def test_replay_day_propagates_loop_exception(tmp_path: Path) -> None:
         engine.dispose()
 
 
+async def test_replay_day_emits_stale_feed_when_quotes_age_past_threshold(
+    tmp_path: Path,
+) -> None:
+    """#74 AC: replay must surface ``stale_feed`` decisions, not just picks/rejects.
+
+    The recording has exactly one quote at ``WINDOW_OPEN``. The driver pads
+    the run by ``_REPLAY_TAIL_PAD`` (10s) past the last recorded event, so
+    the loop ticks at offsets +0/+2/+4/+6/+8 seconds from ``WINDOW_OPEN``
+    on the default ``tick_interval_s=2.0``. With the default
+    ``staleness_threshold_s=5.0``, the +6s and +8s ticks observe a quote
+    that's older than the threshold and emit ``stale_feed`` -- the same
+    decision the live loop would emit when its feed goes silent.
+
+    ``feed_gap`` is intentionally not exercised here: it only surfaces in
+    production when a ``ReconnectingProvider`` fires its ``on_gap``
+    callback, which replay's bare ``ReplayProvider`` doesn't have. The
+    replay driver carries no FeedGap source of its own -- a deterministic
+    recording has no reconnect events to reify.
+    """
+    recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
+    await _record_passing_day(recordings, "AVTX")
+
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        await replay_day(
+            day=DAY,
+            recordings_dir=recordings,
+            universe_dir=universe_dir,
+            journal_engine=engine,
+        )
+        session_factory = create_session_factory(engine)
+        with session_factory() as session:
+            stale_rows = session.execute(
+                select(ScannerDecisionRow).where(
+                    ScannerDecisionRow.kind == DecisionKind.STALE_FEED,
+                ),
+            ).scalars().all()
+    finally:
+        engine.dispose()
+
+    assert len(stale_rows) >= 1
+    assert all(row.ticker is None for row in stale_rows)
+    assert all(row.rejection_reason is None for row in stale_rows)
+    assert all(
+        row.reason is not None and "stale" in row.reason
+        for row in stale_rows
+    )
+
+
 async def test_replay_day_writes_rejected_decisions_to_journal(
     tmp_path: Path,
 ) -> None:
