@@ -1,9 +1,10 @@
 """End-to-end tests for the A8 replay driver (issue #74).
 
-A8a -- skeleton: ``replay_day`` orchestrates ``ReplayProvider`` + a recording-
-backed ``SnapshotAssembler`` + ``ScannerLoop`` against the journal writer for
-a single calendar day. No idempotency, no synthetic-tick fallback yet (those
-land in A8b / A8d).
+Covers the orchestration: ``replay_day`` walks recorded ticks through
+``ScannerLoop`` -> ``JournalWriter``. Verifies the smoke happy path, the
+idempotency guarantee (re-running for the same day is a no-op on row
+counts), and the task-crash escape hatch (loop exception propagates
+instead of hanging the busy-yield).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from sqlalchemy import select
@@ -27,6 +28,8 @@ from ross_trading.scanner.replay import replay_day
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from ross_trading.scanner.scanner import Scanner
 
 pytestmark = pytest.mark.integration
 
@@ -73,15 +76,20 @@ async def _record_passing_day(recordings_dir: Path, ticker: str) -> None:
         ))
 
 
-async def test_replay_day_writes_picks_to_journal(tmp_path: Path) -> None:
-    """Smoke: replay a single-ticker passing day -> >=1 Pick row in the journal."""
+def _setup_fixture(tmp_path: Path, ticker: str) -> tuple[Path, Path]:
+    """Lay down the recordings + per-day universe directories for ``DAY``."""
     recordings = tmp_path / "recordings"
     universe_dir = tmp_path / "universe"
     universe_dir.mkdir()
     (universe_dir / f"{DAY.isoformat()}.json").write_text(
-        json.dumps(["AVTX"]), encoding="utf-8",
+        json.dumps([ticker]), encoding="utf-8",
     )
+    return recordings, universe_dir
 
+
+async def test_replay_day_writes_picks_to_journal(tmp_path: Path) -> None:
+    """Smoke: replay a single-ticker passing day -> >=1 Pick row in the journal."""
+    recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
     await _record_passing_day(recordings, "AVTX")
 
     engine = create_journal_engine("sqlite://")
@@ -103,5 +111,70 @@ async def test_replay_day_writes_picks_to_journal(tmp_path: Path) -> None:
         engine.dispose()
 
     assert summary.picks_emitted >= 1
+    assert summary.runtime_seconds >= 0.0
     assert len(picks) >= 1
     assert picks[0].ticker == "AVTX"
+
+
+async def test_replay_day_is_idempotent_on_rerun(tmp_path: Path) -> None:
+    """Re-running for the same day must not change journal row counts (#74 AC)."""
+    recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
+    await _record_passing_day(recordings, "AVTX")
+
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        first = await replay_day(
+            day=DAY,
+            recordings_dir=recordings,
+            universe_dir=universe_dir,
+            journal_engine=engine,
+        )
+        second = await replay_day(
+            day=DAY,
+            recordings_dir=recordings,
+            universe_dir=universe_dir,
+            journal_engine=engine,
+        )
+    finally:
+        engine.dispose()
+
+    assert first.picks_emitted == second.picks_emitted >= 1
+    assert first.decisions_emitted == second.decisions_emitted
+
+
+class _ExplodingScanner:
+    """Test-only :class:`Scanner` substitute that raises inside the loop tick.
+
+    Used to verify ``replay_day`` propagates loop exceptions instead of
+    spinning forever in its ``while clock.now() < end`` busy-yield.
+    """
+
+    def scan_with_decisions(
+        self,
+        universe: object,
+        snapshot: object,
+    ) -> object:
+        del universe, snapshot
+        msg = "boom"
+        raise RuntimeError(msg)
+
+
+async def test_replay_day_propagates_loop_exception(tmp_path: Path) -> None:
+    """ScannerLoop exceptions must propagate, not hang the busy-yield."""
+    recordings, universe_dir = _setup_fixture(tmp_path, "AVTX")
+    await _record_passing_day(recordings, "AVTX")
+
+    engine = create_journal_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            await replay_day(
+                day=DAY,
+                recordings_dir=recordings,
+                universe_dir=universe_dir,
+                journal_engine=engine,
+                scanner=cast("Scanner", _ExplodingScanner()),
+            )
+    finally:
+        engine.dispose()

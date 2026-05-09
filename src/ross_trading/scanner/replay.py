@@ -1,9 +1,9 @@
-"""Phase 2 -- Atom A8a (#74). Retrospective replay driver.
+"""Phase 2 -- Atom A8 (#74). Retrospective replay driver.
 
-Walks recorded ticks for a single trading day through the existing
-:class:`ScannerLoop`, populating the journal with the same decision
-stream the live loop would emit. The driver is the journal-population
-prerequisite for #70's Phase-2 recall gate.
+Walks recorded ticks for a trading day (or a date range) through the
+existing :class:`ScannerLoop`, populating the journal with the same
+decision stream the live loop would emit. The driver is the journal-
+population prerequisite for #70's Phase-2 recall gate.
 
 Architecture:
 
@@ -12,15 +12,27 @@ Architecture:
    floats) into an in-memory :class:`_RecordingSnapshotAssembler`.
 2. Wire the assembler into :class:`ScannerLoop` together with the journal-
    backed :class:`JournalWriter` and a :class:`VirtualClock` that advances
-   from market open to market close (07:00-11:00 ET, gated by
-   ``is_market_hours`` inside the loop).
-3. Drive the loop until the clock reaches market close, then cancel.
+   over the day's recorded event span. ``ScannerLoop``'s ``is_market_hours``
+   gate keeps scans inside Cameron's 07:00-11:00 ET window even when the
+   recording extends beyond it.
+3. Drive the loop until the clock reaches the recording's last-event
+   timestamp + a tail pad, propagating any task exception, then cancel.
 4. Query the journal for picks/decisions counts and return a
    :class:`ReplaySummary`.
 
-This is the A8a skeleton: no idempotency (reserved for A8b), no synthetic-
-tick fallback (reserved for A8d), no multi-day range. The single-day path
-is enough to populate the journal for one curated day.
+Idempotency. Re-running for the same ``day`` is a no-op on the journal:
+:func:`_purge_day` clears the day's :class:`Pick` and
+:class:`ScannerDecision` rows in one transaction before the new run
+begins. The plan suggested a unique index on ``picks(ticker, ts)``; that
+choice would have broken the existing live-loop contract that emits one
+``Pick`` row per qualifying tick (multiple ticks within a single M1 bar
+share the same ``Pick.ts``). Pre-flight DELETE is the equivalent of the
+plan's documented fallback ("``DELETE WHERE day = ?``") and the only one
+of the two options that's compatible with how the loop actually writes.
+
+Synthetic-tick fallback (the issue's "no recordings" risk) is reserved
+for a follow-up atom. Today, if ``recordings_dir`` has no events for
+``day`` the assembler returns empty bounds and the journal stays clean.
 """
 
 from __future__ import annotations
@@ -29,13 +41,15 @@ import argparse
 import asyncio
 import contextlib
 import json
+import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from ross_trading.core.clock import VirtualClock
 from ross_trading.core.errors import MissingRecordingError
@@ -73,6 +87,7 @@ class ReplaySummary:
     day: date
     picks_emitted: int
     decisions_emitted: int
+    runtime_seconds: float
 
 
 class _StaticUniverseProvider:
@@ -288,6 +303,38 @@ def _journal_summary(engine: Engine, day: date) -> tuple[int, int]:
     return int(picks_count), int(decisions_count)
 
 
+def _purge_day(engine: Engine, day: date) -> None:
+    """Delete every ``Pick`` and ``ScannerDecision`` row that belongs to ``day``.
+
+    The two deletes share one transaction so a crash mid-purge can't leave
+    a half-cleared day on disk. Called by :func:`replay_day` before the
+    loop drives, so re-running for the same day is idempotent at the
+    row-count level (the AC in #74).
+
+    Note on the alternative. The plan recommended a unique index on
+    ``picks(ticker, ts)`` for idempotency. Existing live-loop tests
+    (``test_scanner_loop_with_real_journal_writer_persists_picks``) write
+    multiple ``Pick`` rows that share ``(ticker, ts)`` -- one per scan
+    tick within a single M1 bar -- so a unique constraint there would
+    break the documented loop contract. Pre-flight DELETE is the plan's
+    documented fallback and the only one of the two options that's
+    compatible with how the loop actually writes.
+    """
+    day_start = datetime(day.year, day.month, day.day, 0, 0, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    factory = create_session_factory(engine)
+    with factory() as session, session.begin():
+        session.execute(
+            delete(ScannerDecisionRow).where(
+                ScannerDecisionRow.decision_ts >= day_start,
+                ScannerDecisionRow.decision_ts < day_end,
+            ),
+        )
+        session.execute(
+            delete(Pick).where(Pick.ts >= day_start, Pick.ts < day_end),
+        )
+
+
 async def replay_day(
     *,
     day: date,
@@ -301,14 +348,17 @@ async def replay_day(
     """Replay a single calendar day through ``ScannerLoop`` -> journal.
 
     Pre-loads the day's universe into memory, drives the loop on a
-    :class:`VirtualClock` from start-of-day to end-of-day UTC, and queries
-    the journal for the resulting row counts. ``ScannerLoop``'s
+    :class:`VirtualClock` over the recording's intraday event span, and
+    queries the journal for the resulting row counts. ``ScannerLoop``'s
     ``is_market_hours`` gate keeps scans within Cameron's 07:00-11:00 ET
-    window; ticks outside the window are no-ops on the loop side.
+    window even when the recording extends beyond it.
 
-    No idempotency guard yet (A8b). No synthetic-tick fallback (A8d). If
-    ``recordings_dir`` has no events for ``day`` the assembler returns
-    empty snapshots and no picks fire -- the journal stays untouched.
+    Idempotent: any existing journal rows for ``day`` are deleted before
+    the loop drives (see :func:`_purge_day`).
+
+    Synthetic-tick fallback (the issue's "no recordings" risk) is reserved
+    for a follow-up atom. If ``recordings_dir`` has no events for ``day``
+    the assembler returns empty bounds and the journal stays clean.
     """
     universe_provider = _StaticUniverseProvider(universe_dir)
     universe = await universe_provider.list_symbols(day)
@@ -320,10 +370,15 @@ async def replay_day(
     finally:
         await provider.disconnect()
 
+    started = time.monotonic()
+    _purge_day(journal_engine, day)
     bounds = assembler.day_event_bounds(day)
     if bounds is None:
         # Nothing recorded for this day -- no scans to drive.
-        return ReplaySummary(day=day, picks_emitted=0, decisions_emitted=0)
+        return ReplaySummary(
+            day=day, picks_emitted=0, decisions_emitted=0,
+            runtime_seconds=time.monotonic() - started,
+        )
     start, last_event = bounds
     end = last_event + _REPLAY_TAIL_PAD
 
@@ -343,17 +398,25 @@ async def replay_day(
     task = asyncio.create_task(loop.run())
     try:
         while clock.now() < end:
+            if task.done():
+                # Loop crashed before we reached the recording's tail. The
+                # busy-yield would otherwise spin forever -- propagate the
+                # exception (or swallow a clean exit) by reading .result().
+                task.result()
+                break
             await asyncio.sleep(0)
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     picks_count, decisions_count = _journal_summary(journal_engine, day)
     return ReplaySummary(
         day=day,
         picks_emitted=picks_count,
         decisions_emitted=decisions_count,
+        runtime_seconds=time.monotonic() - started,
     )
 
 
@@ -362,9 +425,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         prog="python -m ross_trading.scanner.replay",
         description="Replay a recorded trading day through the scanner -> journal.",
     )
+    day_group = parser.add_mutually_exclusive_group(required=True)
+    day_group.add_argument(
+        "--date", type=date.fromisoformat,
+        help="Single calendar day (YYYY-MM-DD) to replay.",
+    )
+    day_group.add_argument(
+        "--from", dest="date_from", type=date.fromisoformat,
+        help="First day of an inclusive range (use with --to).",
+    )
     parser.add_argument(
-        "--date", required=True, type=date.fromisoformat,
-        help="Calendar day (YYYY-MM-DD) to replay.",
+        "--to", dest="date_to", type=date.fromisoformat,
+        help="Last day of an inclusive range (use with --from).",
     )
     parser.add_argument(
         "--source", required=True, type=Path, dest="recordings_dir",
@@ -382,24 +454,64 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_days(args: argparse.Namespace) -> list[date]:
+    if args.date is not None:
+        return [args.date]
+    if args.date_to is None:
+        msg = "--from requires --to"
+        raise SystemExit(msg)
+    if args.date_to < args.date_from:
+        msg = f"--to ({args.date_to}) is before --from ({args.date_from})"
+        raise SystemExit(msg)
+    days: list[date] = []
+    cursor = args.date_from
+    while cursor <= args.date_to:
+        days.append(cursor)
+        cursor = cursor + timedelta(days=1)
+    return days
+
+
+async def _run_days(
+    days: list[date],
+    recordings_dir: Path,
+    universe_dir: Path,
+    journal_engine: Engine,
+) -> list[ReplaySummary]:
+    summaries: list[ReplaySummary] = []
+    for day in days:
+        if not (recordings_dir / day.isoformat()).exists():
+            print(
+                f"WARN: no recordings for {day.isoformat()}; skipping",
+                file=sys.stderr,
+            )
+            continue
+        summaries.append(
+            await replay_day(
+                day=day,
+                recordings_dir=recordings_dir,
+                universe_dir=universe_dir,
+                journal_engine=journal_engine,
+            ),
+        )
+    return summaries
+
+
 def _main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
+    days = _resolve_days(args)
     engine = create_journal_engine(args.db_url)
     try:
-        summary = asyncio.run(
-            replay_day(
-                day=args.date,
-                recordings_dir=args.recordings_dir,
-                universe_dir=args.universe_dir,
-                journal_engine=engine,
-            ),
+        summaries = asyncio.run(
+            _run_days(days, args.recordings_dir, args.universe_dir, engine),
         )
     finally:
         engine.dispose()
-    print(
-        f"{summary.day} picks={summary.picks_emitted} "
-        f"decisions={summary.decisions_emitted}",
-    )
+    for summary in summaries:
+        print(
+            f"{summary.day} picks={summary.picks_emitted} "
+            f"decisions={summary.decisions_emitted} "
+            f"runtime={summary.runtime_seconds:.2f}s",
+        )
     return 0
 
 
