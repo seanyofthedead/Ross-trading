@@ -86,9 +86,17 @@ async def capture_session(
             clock=real_clock,
         )
         await market.connect()
-        if upstream_news is not None:
-            await upstream_news.connect()
+        # ``news_connected`` guards the symmetric cleanup case: if
+        # ``upstream_news.connect()`` raises, we must still disconnect
+        # ``market`` (so the live socket/session doesn't leak on a failed
+        # startup path) but must NOT call ``disconnect`` on the
+        # never-connected news provider. Disconnect order is intentional:
+        # news first (reverse of connect order), then market.
+        news_connected = False
         try:
+            if upstream_news is not None:
+                await upstream_news.connect()
+                news_connected = True
             await _capture_floats(upstream_float, recorder, symbols, as_of, real_clock)
             tasks: list[asyncio.Task[None]] = [
                 asyncio.create_task(_capture_quotes(market, recorder, symbols)),
@@ -117,9 +125,10 @@ async def capture_session(
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
         finally:
-            await market.disconnect()
-            if upstream_news is not None:
+            if news_connected:
+                assert upstream_news is not None  # noqa: S101  # guarded by flag
                 await upstream_news.disconnect()
+            await market.disconnect()
 
 
 def _validate_timeframes(

@@ -171,6 +171,59 @@ async def test_capture_records_headlines_when_news_provider_given(
     assert len(_read_gz_lines(tmp_path / DAY.isoformat() / "headline.jsonl.gz")) == 2
 
 
+async def test_capture_disconnects_market_when_news_connect_fails(
+    tmp_path: Path,
+) -> None:
+    """If ``news.connect`` raises, the already-connected market provider must
+    still be disconnected (no leaked socket on a failed startup path), and the
+    never-connected news provider must NOT have ``disconnect`` called on it.
+    """
+
+    class _FailingNews:
+        def __init__(self) -> None:
+            self.connect_calls = 0
+            self.disconnect_calls = 0
+
+        async def connect(self) -> None:
+            self.connect_calls += 1
+            msg = "news-credentials-down"
+            raise FeedError(msg)
+
+        async def disconnect(self) -> None:
+            self.disconnect_calls += 1
+
+        async def subscribe_headlines(
+            self, symbols: Iterable[str] | None = None
+        ) -> AsyncIterator[Headline]:
+            del symbols
+            if False:
+                yield  # pragma: no cover
+
+        async def recent_headlines(
+            self, symbol: str, since: datetime
+        ) -> Sequence[Headline]:
+            del symbol, since
+            return ()
+
+    upstream = FakeMarketDataProvider()
+    news = _FailingNews()
+    with pytest.raises(FeedError, match="news-credentials-down"):
+        await capture_session(
+            upstream_market_data=upstream,
+            upstream_news=news,
+            upstream_float=None,
+            universe=["AVTX"],
+            output_dir=tmp_path,
+            timeframes=(Timeframe.M1,),
+        )
+    # Market connected then was cleaned up despite the news connect failure.
+    assert upstream.connect_calls == 1
+    assert upstream.disconnect_calls == 1
+    # News provider never finished connecting, so disconnect must NOT run.
+    assert news.connect_calls == 1
+    assert news.disconnect_calls == 0
+
+
 async def test_capture_skips_news_when_provider_is_none(tmp_path: Path) -> None:
     upstream = FakeMarketDataProvider()
     await capture_session(
