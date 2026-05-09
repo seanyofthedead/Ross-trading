@@ -20,7 +20,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from ross_trading.data.types import Bar, FloatRecord, Headline, Quote, Side, Tape
+from ross_trading.data.types import Bar, FeedGap, FloatRecord, Headline, Quote, Side, Tape
 
 SCHEMA_VERSION = 1
 
@@ -36,6 +36,7 @@ class EventType(StrEnum):
     TAPE = "tape"
     HEADLINE = "headline"
     FLOAT = "float"
+    FEED_GAP = "feed_gap"
 
 
 def encode_event(event_type: EventType, payload: dict[str, Any], ts_recorded: datetime) -> str:
@@ -165,4 +166,22 @@ def decode_float(p: dict[str, Any]) -> FloatRecord:
         float_shares=int(p["float_shares"]),
         shares_outstanding=int(p["shares_outstanding"]),
         source=p["source"],
+    )
+
+
+def encode_feed_gap(g: FeedGap) -> dict[str, Any]:
+    return {
+        "symbol": g.symbol,
+        "start": g.start.isoformat(),
+        "end": g.end.isoformat(),
+        "reason": g.reason,
+    }
+
+
+def decode_feed_gap(p: dict[str, Any]) -> FeedGap:
+    return FeedGap(
+        symbol=p.get("symbol"),
+        start=datetime.fromisoformat(p["start"]),
+        end=datetime.fromisoformat(p["end"]),
+        reason=p["reason"],
     )

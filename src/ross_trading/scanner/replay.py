@@ -34,14 +34,20 @@ Synthetic-tick fallback (the issue's "no recordings" risk) is reserved
 for a follow-up atom. Today, if ``recordings_dir`` has no events for
 ``day`` the assembler returns empty bounds and the journal stays clean.
 
-FEED_GAP decisions don't surface from replay. A live loop reifies them
-via ``ReconnectingProvider(upstream, on_gap=loop.on_feed_gap)`` (see
-``ScannerLoop.on_feed_gap``); the bare :class:`ReplayProvider` used here
-has no ``on_gap`` callback because a deterministic recording has no
-reconnect events to model. STALE_FEED still surfaces naturally -- the
-loop fires it whenever ``anchor_ts - latest_quote_ts`` exceeds
-``staleness_threshold_s``, which happens during the
-``_REPLAY_TAIL_PAD`` window after the recording's last quote.
+FEED_GAP decisions surface from replay when the recording captured them.
+A live capture path wires the recorder behind the reconnect provider
+(``ReconnectingProvider(upstream, on_gap=recorder.record_feed_gap)``),
+so reconnect-induced gap windows land in the per-day
+``feed_gap.jsonl.gz`` file alongside the other event streams. The driver
+loads that file once at startup and dispatches each gap to
+``ScannerLoop.on_feed_gap`` once virtual time reaches ``gap.end``,
+producing the same decision row a live loop would have written when the
+upstream reconnect actually fired. Recordings that pre-date the gap-
+capture path simply omit the file; the driver behaves as before.
+STALE_FEED still surfaces naturally -- the loop fires it whenever
+``anchor_ts - latest_quote_ts`` exceeds ``staleness_threshold_s``, which
+happens during the ``_REPLAY_TAIL_PAD`` window after the recording's
+last quote.
 """
 
 from __future__ import annotations
@@ -81,7 +87,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.engine import Engine
 
-    from ross_trading.data.types import Bar, FloatRecord, Headline, Quote
+    from ross_trading.data.types import Bar, FeedGap, FloatRecord, Headline, Quote
 
 # Pad after the last recorded event so the loop fires at least one final
 # tick that observes the freshest data and (if applicable) the freshest
@@ -257,6 +263,33 @@ class _RecordingSnapshotAssembler:
         return snapshots, latest_quote_ts
 
 
+async def _load_feed_gaps(
+    provider: ReplayProvider,
+    day: date,
+) -> list[FeedGap]:
+    """Drain recorded ``FeedGap`` events that fall within ``day``.
+
+    Returned list is sorted by ``end`` so the driver can dispatch gaps in
+    closure order: each one fires the moment virtual time reaches its
+    ``end``, mirroring the live model where ``ReconnectingProvider`` calls
+    ``loop.on_feed_gap`` after the reconnect completes. Gaps that began
+    earlier or end later than ``day`` are filtered out -- a gap straddling
+    midnight gets dispatched only by the day in which it ends, not twice.
+
+    Older recordings without ``feed_gap.jsonl.gz`` produce an empty list;
+    the driver's per-tick dispatch loop is a no-op and replay behavior is
+    unchanged for those days.
+    """
+    day_start = datetime(day.year, day.month, day.day, 0, 0, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    gaps: list[FeedGap] = []
+    async for gap in provider.subscribe_feed_gaps():
+        if day_start <= gap.end < day_end:
+            gaps.append(gap)
+    gaps.sort(key=lambda g: g.end)
+    return gaps
+
+
 async def _load_assembler(
     provider: ReplayProvider,
     universe: frozenset[str],
@@ -376,6 +409,7 @@ async def replay_day(
     await provider.connect()
     try:
         assembler = await _load_assembler(provider, universe, day)
+        feed_gaps = await _load_feed_gaps(provider, day)
     finally:
         await provider.disconnect()
 
@@ -390,6 +424,16 @@ async def replay_day(
         )
     start, last_event = bounds
     end = last_event + _REPLAY_TAIL_PAD
+    if feed_gaps:
+        # Make sure the busy-yield runs at least one tick past the latest
+        # recorded gap close, so the in-loop dispatch fires it at virtual
+        # time ``gap.end`` (decision_ts is stamped from clock.now() inside
+        # on_feed_gap). Without this, a gap whose end falls outside the
+        # event-derived window would either be missed entirely or, with a
+        # post-loop tail flush, be journaled at last_event + pad rather
+        # than the recorded reconnect time.
+        latest_gap_end = max(g.end for g in feed_gaps)
+        end = max(end, latest_gap_end + timedelta(seconds=tick_interval_s))
 
     clock = VirtualClock(start)
     session_factory = create_session_factory(journal_engine)
@@ -405,6 +449,7 @@ async def replay_day(
     )
 
     task = asyncio.create_task(loop.run())
+    gap_idx = 0
     try:
         while clock.now() < end:
             if task.done():
@@ -413,6 +458,17 @@ async def replay_day(
                 # exception (or swallow a clean exit) by reading .result().
                 task.result()
                 break
+            # Fire any recorded gaps whose end has been reached. Dispatch
+            # is monotonic in ``gap.end`` so the journal preserves the live
+            # ordering of feed_gap rows, and decision_ts (stamped via
+            # ``clock.now()`` inside ``on_feed_gap``) lands at the recorded
+            # reconnect time rather than at the busy-yield exit boundary.
+            # ``on_feed_gap`` is sync and the event loop serializes it with
+            # ``_tick`` -- same contract the production reconnect path
+            # relies on.
+            while gap_idx < len(feed_gaps) and feed_gaps[gap_idx].end <= clock.now():
+                loop.on_feed_gap(feed_gaps[gap_idx])
+                gap_idx += 1
             await asyncio.sleep(0)
     finally:
         if not task.done():

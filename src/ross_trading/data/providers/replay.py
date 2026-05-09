@@ -30,6 +30,7 @@ from ross_trading.data._codec import (
     EventType,
     decode_bar,
     decode_envelope,
+    decode_feed_gap,
     decode_float,
     decode_headline,
     decode_quote,
@@ -42,7 +43,14 @@ if TYPE_CHECKING:
     from datetime import date, datetime
     from pathlib import Path
 
-    from ross_trading.data.types import Bar, FloatRecord, Headline, Quote, Tape
+    from ross_trading.data.types import (
+        Bar,
+        FeedGap,
+        FloatRecord,
+        Headline,
+        Quote,
+        Tape,
+    )
 
 
 class ReplayMode(StrEnum):
@@ -170,6 +178,40 @@ class ReplayProvider:
             if headline.ticker.upper() == upper and headline.ts >= since:
                 result.append(headline)
         return result
+
+    async def subscribe_feed_gaps(
+        self,
+        symbols: Iterable[str] | None = None,
+    ) -> AsyncIterator[FeedGap]:
+        """Yield recorded :class:`FeedGap` events in capture order.
+
+        ``symbols=None`` yields every gap (the default for the replay
+        driver, which routes them to the loop-wide ``on_feed_gap``).
+        Passing an explicit symbol set yields the symbol-less gaps
+        (``FeedGap.symbol is None`` -- always relevant) plus any gap whose
+        ``symbol`` is in the set; symbol-scoped gaps for tickers outside
+        the set are skipped.
+
+        REALTIME pacing anchors on ``gap.end``, not ``gap.start``: in
+        production ``ReconnectingProvider`` invokes its ``on_gap`` callback
+        only after reconnect/backfill completes -- i.e., wall-clock time at
+        the callback site is approximately ``gap.end``. Pacing on
+        ``gap.start`` would yield each gap a full duration earlier than the
+        live consumer would have seen it.
+        """
+        wanted = None if symbols is None else {s.upper() for s in symbols}
+        anchor = _Anchor()
+        for line in self._read_lines(EventType.FEED_GAP):
+            _, payload = decode_envelope(line)
+            gap = decode_feed_gap(payload)
+            if (
+                wanted is not None
+                and gap.symbol is not None
+                and gap.symbol.upper() not in wanted
+            ):
+                continue
+            await self._maybe_pace(gap.end, anchor)
+            yield gap
 
     async def get_float(self, ticker: str, as_of: date) -> FloatRecord:
         if not self._float_records:

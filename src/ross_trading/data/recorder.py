@@ -25,6 +25,7 @@ from ross_trading.data._codec import (
     EventType,
     encode_bar,
     encode_event,
+    encode_feed_gap,
     encode_float,
     encode_headline,
     encode_quote,
@@ -36,7 +37,14 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
 
-    from ross_trading.data.types import Bar, FloatRecord, Headline, Quote, Tape
+    from ross_trading.data.types import (
+        Bar,
+        FeedGap,
+        FloatRecord,
+        Headline,
+        Quote,
+        Tape,
+    )
 
 
 class FeedRecorder:
@@ -77,6 +85,17 @@ class FeedRecorder:
 
     def record_float(self, r: FloatRecord) -> None:
         self._write(EventType.FLOAT, r.as_of, encode_float(r))
+
+    def record_feed_gap(self, g: FeedGap) -> None:
+        """Capture a reconnect-induced gap so replay can reify it as feed_gap.
+
+        Wired by the live capture path as
+        ``ReconnectingProvider(upstream, on_gap=recorder.record_feed_gap)``;
+        the replay driver dispatches each recorded gap through
+        ``ScannerLoop.on_feed_gap`` at its captured wall-clock instant,
+        closing the FEED_GAP rung of #74's AC.
+        """
+        self._write(EventType.FEED_GAP, g.start.date(), encode_feed_gap(g))
 
     def flush(self) -> None:
         for f in self._files.values():
