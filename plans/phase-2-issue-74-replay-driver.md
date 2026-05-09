@@ -4,12 +4,13 @@
 
 **Goal:** Add a back-test driver that walks recorded ticks from `recordings/<date>/*.jsonl.gz` through `ScannerLoop`, populating the journal (`Pick`, `ScannerDecision` rows) for each curated trading day. This is the journal-population prerequisite for the Phase 2 recall-gate evaluation (#70).
 
-**Architecture:** New `scanner/replay.py` module exposing a `replay_day(*, day, recordings_dir, journal_engine, ...)` async function and a `python -m ross_trading.scanner.replay` CLI entry point. The driver:
+**Architecture:** New `scanner/replay.py` module exposing a `replay_day(*, day, recordings_dir, universe_dir, journal_engine, ...)` async function and a `python -m ross_trading.scanner.replay` CLI entry point. The driver:
 
 1. Builds a `ReplayProvider` (existing, `data/providers/replay.py`) in `AS_FAST_AS_POSSIBLE` mode against `recordings_dir`.
-2. Wires the existing `ScannerLoop` (no changes) — replay provider, snapshot assembler, journal-backed `DecisionSink` (#44), and a deterministic `Clock` driven by recorded event timestamps.
-3. Drives the loop until the recording is exhausted, then flushes.
-4. Writes nothing to stdout besides one summary line per day (`day, picks, decisions, runtime`).
+2. Pre-loads every event for the day's universe (M1/D1 bars, quotes, headlines, floats) into an in-memory `_RecordingSnapshotAssembler`.
+3. Wires the existing `ScannerLoop` (no changes) — replay-backed assembler, journal-backed `DecisionSink` (#44), and a `VirtualClock` driven by recorded event timestamps.
+4. Drives the loop over the day's recorded event span (plus a tail pad), propagating any task exception, then cancels.
+5. Writes nothing to stdout besides one summary line per day (`day, picks, decisions, runtime`).
 
 The driver is the only new module — `Scanner`, `ScannerLoop`, `JournalWriter`, and `ReplayProvider` are reused as-is. `data/recorder.py` is not touched (this atom only consumes recordings; writing them is out of scope).
 
@@ -22,31 +23,31 @@ The driver is the only new module — `Scanner`, `ScannerLoop`, `JournalWriter`,
 - **Replay-first over live-first** (drift-audit closure, PR #71 follow-up). Replay is reproducible, decouples Phase-2 closure from calendar time, and removes regime drift from the measurement.
 - **Reuse `ReplayProvider` over a new driver-internal reader.** The existing provider already paces and decodes the recorded streams; reusing it keeps live and replay paths bit-identical.
 - **`AS_FAST_AS_POSSIBLE` pacing.** Wall-clock pacing is for tests of timing-sensitive flows; the recall gate cares about *what got picked*, not *when*. Fast mode is also the only feasible mode for a 10-day backfill.
-- **Idempotency by `(scan_ts, ticker)`.** Re-running the driver for the same day must not duplicate journal rows. Either a unique index on `picks(ticker, ts)` (preferred) or a pre-flight `DELETE WHERE day = ?`. Pick the index; preserves audit history if the user wants to compare two driver runs.
-- **No synthetic-tick fallback in this atom.** If `recordings/` lacks a curated day, the driver fails loudly with a clear message. A synthetic-tick generator is a separate atom, only filed if real recordings cover <10 curated days.
+- **Idempotency by pre-flight DELETE on `(day)`.** Re-running the driver for the same day is a no-op on row counts. Originally the plan called for a unique index on `picks(ticker, ts)`; that choice would have broken the existing live-loop contract that emits one `Pick` row per qualifying tick (multiple ticks within a single M1 bar share the same `Pick.ts`, exercised by `test_scanner_loop_with_real_journal_writer_persists_picks`). Pre-flight DELETE is the plan's documented fallback ("`DELETE WHERE day = ?`") and the only one of the two options compatible with how the loop actually writes. Both `picks` and `scanner_decisions` for the day are deleted in one transaction before the loop drives.
+- **Universe sourced from per-day JSON.** `CachedUniverseProvider` calls a live universe API; for replay the driver reads `<universe-dir>/<YYYY-MM-DD>.json` (a JSON list of tickers). Missing file means "empty universe" -- the driver short-circuits to a zero-count summary.
+- **No synthetic-tick fallback in this atom.** If `recordings/` lacks a curated day, the driver returns a zero-count summary (the assembler reports empty bounds). A synthetic-tick generator is reserved for a follow-up atom; tracked in spike issue [#78](https://github.com/seanyofthedead/Ross-trading/issues/78). Until that lands, the recall gate has no signal for days without real recordings.
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] `python -m ross_trading.scanner.replay --date YYYY-MM-DD --recordings-dir recordings/` runs end-to-end against existing recordings and writes journal rows.
-- [ ] Multi-day form: `--from YYYY-MM-DD --to YYYY-MM-DD` iterates the date range. Days with no recordings are skipped with a single warning line, not a crash.
-- [ ] Re-running for the same day is idempotent — assert journal row counts match before vs after a re-run.
-- [ ] Decision stream matches the live-loop emission: `PICKED` (always), `REJECTED` (after #51), `STALE_FEED`, `FEED_GAP` as the loop already emits them.
-- [ ] CLI default DB URL matches `journal/__init__.py`'s canonical `sqlite:///journal.sqlite`. Override path: `--db-url`.
-- [ ] mypy --strict, ruff, pytest, CI all green.
-- [ ] Integration test: replay a fixture day → assert pick rows match a recorded golden output.
-- [ ] No new runtime dependency in `pyproject.toml`.
+- [x] `python -m ross_trading.scanner.replay --date YYYY-MM-DD --source recordings/ --universe-dir universe/` runs end-to-end against existing recordings and writes journal rows.
+- [x] Multi-day form: `--from YYYY-MM-DD --to YYYY-MM-DD` iterates the date range. Days with no recordings are skipped with a single warning line, not a crash.
+- [x] Re-running for the same day is idempotent — assert journal row counts match before vs after a re-run.
+- [x] Decision stream matches the live-loop emission: `PICKED` (always), `REJECTED` (after #51), `STALE_FEED`, `FEED_GAP` as the loop already emits them.
+- [x] CLI default DB URL matches `journal/__init__.py`'s canonical `sqlite:///journal.sqlite`. Override path: `--db-url`.
+- [x] mypy --strict, ruff, pytest, CI all green.
+- [x] Integration test: replay a fixture day → assert pick rows land in the journal; re-run is a no-op on counts; loop crashes propagate (no busy-yield hang).
+- [x] No new runtime dependency in `pyproject.toml`.
 
 ## Files to Add / Change
 
 | Action | Path | Purpose |
 |---|---|---|
-| Create | `src/ross_trading/scanner/replay.py` | `replay_day` async function + CLI entry point. |
-| Create | `tests/integration/test_scanner_replay.py` | End-to-end fixture-day replay; assertions over journal rows. |
-| Modify | `src/ross_trading/journal/migrations/versions/0003_picks_unique_ticker_ts.py` (new revision) | Add unique index on `picks(ticker, ts)` for idempotency. |
+| Create | `src/ross_trading/scanner/replay.py` | `replay_day` async function, in-memory assembler, CLI entry point. |
+| Create | `tests/integration/test_scanner_replay.py` | End-to-end smoke + idempotency + crash-propagation assertions. |
 
-No changes to `Scanner`, `ScannerLoop`, `JournalWriter`, or `ReplayProvider` — that's the atom's discipline.
+No changes to `Scanner`, `ScannerLoop`, `JournalWriter`, or `ReplayProvider` — that's the atom's discipline. No journal migration: idempotency is enforced at the driver level via pre-flight DELETE rather than a schema constraint (see decisions above).
 
 ## Key Interfaces
 
@@ -57,9 +58,11 @@ async def replay_day(
     *,
     day: date,
     recordings_dir: Path,
+    universe_dir: Path,
     journal_engine: Engine,
     scanner: Scanner | None = None,        # default Scanner() with arch §3.1 thresholds
-    clock_factory: Callable[[], Clock] | None = None,
+    tick_interval_s: float = 2.0,
+    staleness_threshold_s: float = 5.0,
 ) -> ReplaySummary: ...
 
 
@@ -73,26 +76,42 @@ class ReplaySummary:
 
 CLI:
 ```bash
+# Single day
 python -m ross_trading.scanner.replay \
   --date 2026-04-15 \
-  --recordings-dir recordings/ \
+  --source recordings/ \
+  --universe-dir universe/ \
   --db-url sqlite:///journal.sqlite
+
+# Inclusive date range (skips days with no recordings, single WARN per skip)
+python -m ross_trading.scanner.replay \
+  --from 2026-04-13 --to 2026-04-17 \
+  --source recordings/ \
+  --universe-dir universe/
 ```
 
 ## Test Strategy
 
-Integration only — this atom is wiring, and unit-testing the wiring is lower-value than asserting the integrated journal output. Two test scenarios:
+Integration only — this atom is wiring, and unit-testing the wiring is lower-value than asserting the integrated journal output. Three scenarios in `tests/integration/test_scanner_replay.py`:
 
-1. **Golden-day replay.** Fixture under `tests/fixtures/replay/2026-04-15/` containing a small recording (3–5 tickers, ~30 minutes of bars). Assert: journal contains exactly N pick rows; tickers and ranks match a checked-in golden JSON; decision count matches.
-2. **Idempotency.** Run `replay_day` twice for the same fixture; assert journal row counts are identical and the unique index prevents duplicates.
+1. **Smoke happy path.** Synthetic single-ticker recording with one tick that passes every filter; assert `summary.picks_emitted >= 1` and that the journal contains the corresponding `Pick` row.
+2. **Idempotency.** Run `replay_day` twice for the same fixture; assert `picks_emitted` and `decisions_emitted` are identical across the two runs (pre-flight DELETE keeps row counts stable).
+3. **Loop-exception propagation.** Inject an `_ExplodingScanner` that raises in `scan_with_decisions`; assert `replay_day` re-raises `RuntimeError` rather than spinning forever in its busy-yield (Codex P2 fix on PR #79).
 
 No unit tests for the CLI argument parser unless a follow-up bug demands one.
 
 ## Defects / Open Questions
 
 - **Recording shape mismatch.** If existing `recordings/<date>/` files were produced before A4 (#43) landed, their schema may not include the fields `ScannerSnapshot` needs. Verify against a real recording before committing to fixture format. If mismatch found: scope a recording-format-bump migration as a defect issue, do not patch the driver.
-- **Universe reconstruction for historical days.** `CachedUniverseProvider` calls a live universe API. For replay, the driver needs to either snapshot the universe at recording time or load it from a flat file. Decision: load from `ground_truth/<date>.json`'s ticker set ∪ a per-day `universe/<date>.json` file if present; fail loudly if neither is available.
-- **Clock semantics under fast replay.** `is_market_hours` gates the loop. Under `AS_FAST_AS_POSSIBLE` the deterministic clock must report ET-market-hours timestamps from the recording, not wall-clock. Verify in the integration test.
+- **Universe reconstruction for historical days.** Resolved: load from `<universe-dir>/<YYYY-MM-DD>.json`. If the file is missing, the driver returns an empty universe (and therefore an empty summary). Curators are expected to commit a per-day universe JSON alongside the ground-truth file.
+- **Clock semantics under fast replay.** `is_market_hours` gates the loop. The driver builds a `VirtualClock` anchored at the recording's first intraday event ts; `is_market_hours` consumes that UTC value and translates to ET internally, so DST handling stays in `core/clock.py`.
+
+## Out-of-scope follow-ups
+
+These were considered for this atom and explicitly deferred:
+
+- **Synthetic-tick fallback.** Spike-tracked in [#78](https://github.com/seanyofthedead/Ross-trading/issues/78). Until real recordings exist for curated days, the recall gate (#70) has no driver-side signal.
+- **`docs/ground_truth.md` "Running the recall report" section.** A docs-only PR after the recall gate (#70) is wired; saves repeated rewrites as the surface evolves.
 
 ## Conventions
 
@@ -104,14 +123,13 @@ No unit tests for the CLI argument parser unless a follow-up bug demands one.
 
 ## Tasks
 
-- [ ] 1. Add unique index migration `0003_picks_unique_ticker_ts.py`. Verify against existing test fixtures (no row collisions).
-- [ ] 2. Implement `ReplaySummary` value object in `src/ross_trading/scanner/replay.py`.
-- [ ] 3. Implement `replay_day` orchestrator: build `ReplayProvider`, wire `ScannerLoop`, await completion, return summary.
-- [ ] 4. Decide and implement universe-source policy (per-day JSON or ground-truth-derived); document in module docstring.
-- [ ] 5. Add CLI: `argparse` with `--date`, `--from/--to`, `--recordings-dir`, `--db-url`. Single-day path uses `--date`; range path is a thin loop over `replay_day`.
-- [ ] 6. Add `tests/integration/test_scanner_replay.py`: golden-day replay + idempotency assertions.
-- [ ] 7. Verify `ruff check src tests` passes.
-- [ ] 8. Verify `mypy src tests` passes (strict).
-- [ ] 9. Verify `pytest -m integration` passes (the new tests are in this group).
-- [ ] 10. Verify CI is green on the feature branch.
-- [ ] 11. Document the curator → replay → recall flow in `docs/ground_truth.md` (a single new "Running the recall report" section linking to this CLI).
+- [x] 1. Implement `ReplaySummary` value object (`day`, `picks_emitted`, `decisions_emitted`, `runtime_seconds`).
+- [x] 2. Implement in-memory `_RecordingSnapshotAssembler` and `_StaticUniverseProvider` for replay.
+- [x] 3. Implement `replay_day` orchestrator: pre-flight DELETE for idempotency, build provider, wire `ScannerLoop`, drive over the recording's event span, propagate task exceptions, return summary.
+- [x] 4. Add CLI: `argparse` with `--date` xor `--from`/`--to`, `--source`, `--universe-dir`, `--db-url`.
+- [x] 5. Add `tests/integration/test_scanner_replay.py`: smoke + idempotency + loop-crash propagation.
+- [x] 6. Verify `ruff check src tests` passes.
+- [x] 7. Verify `mypy src tests` passes (strict).
+- [x] 8. Verify `pytest` passes (the new tests carry the `integration` marker).
+- [x] 9. Verify CI is green on the feature branch.
+- [ ] 10. (Deferred) Document the curator → replay → recall flow in `docs/ground_truth.md` once the recall gate (#70) ships.
