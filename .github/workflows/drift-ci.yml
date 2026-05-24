@@ -94,6 +94,9 @@ jobs:
       - name: Pytest (integration)
         run: pytest -m integration
 
+      - name: Safety invariants
+        run: pytest tests/integration/test_safety_invariants.py
+
       - name: Alembic upgrade head against a temp SQLite DB
         run: alembic -x sqlalchemy.url=sqlite:///"$RUNNER_TEMP"/journal.sqlite upgrade head
 
