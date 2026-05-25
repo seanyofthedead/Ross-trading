@@ -77,6 +77,22 @@ def test_catalyst_hard_reject_blocks_entry() -> None:
         assert_safety_invariants((_entry(catalyst_status="hard_reject"),))
 
 
+def test_prior_catalyst_hard_reject_blocks_later_entry() -> None:
+    decisions = (
+        SafetyDecision(
+            kind="reject",
+            decision_ts=T0,
+            ticker="AVTX",
+            catalyst_status="hard_reject",
+            reason="registered direct offering",
+        ),
+        _entry(offset_s=1, ticker="avtx", catalyst_status="approved"),
+    )
+
+    with pytest.raises(SafetyInvariantViolation, match="catalyst hard reject"):
+        assert_safety_invariants(decisions)
+
+
 def test_replay_decision_stream_hash_is_stable() -> None:
     first = (
         _entry(offset_s=0, ticker="AVTX"),

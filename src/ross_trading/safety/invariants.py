@@ -54,12 +54,22 @@ def assert_safety_invariants(decisions: tuple[SafetyDecision, ...]) -> None:
     """Fail fast if any required safety invariant is violated."""
 
     lockout_active = False
+    global_catalyst_hard_reject = False
+    catalyst_hard_rejects: set[str] = set()
     for decision in decisions:
         if decision.kind == "lockout_started":
             lockout_active = True
             continue
         if decision.kind == "lockout_ended":
             lockout_active = False
+            continue
+        if decision.kind == "reject":
+            if decision.catalyst_status == "hard_reject":
+                ticker = _ticker_key(decision.ticker)
+                if ticker is None:
+                    global_catalyst_hard_reject = True
+                else:
+                    catalyst_hard_rejects.add(ticker)
             continue
         if decision.kind != "entry":
             continue
@@ -74,7 +84,11 @@ def assert_safety_invariants(decisions: tuple[SafetyDecision, ...]) -> None:
             _raise(decision, "entry without entry price")
         if stop_price >= entry_price:
             _raise(decision, "entry stop must be below entry price")
-        if decision.catalyst_status == "hard_reject":
+        if (
+            decision.catalyst_status == "hard_reject"
+            or global_catalyst_hard_reject
+            or _ticker_key(decision.ticker) in catalyst_hard_rejects
+        ):
             _raise(decision, "entry after catalyst hard reject")
 
 
@@ -90,6 +104,12 @@ def _raise(decision: SafetyDecision, reason: str) -> NoReturn:
     ticker = decision.ticker or "<none>"
     msg = f"{decision.decision_ts.isoformat()} {ticker}: {reason}"
     raise SafetyInvariantViolation(msg)
+
+
+def _ticker_key(ticker: str | None) -> str | None:
+    if ticker is None:
+        return None
+    return ticker.upper()
 
 
 def _to_wire(decision: SafetyDecision) -> dict[str, str | None]:
