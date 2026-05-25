@@ -56,6 +56,8 @@ Unknown keys raise `GroundTruthError` (e.g., `"note"` for `"notes"` is rejected)
 
 ## Procedure
 
+Before curating new days, pre-populate the bar recordings for those dates using [`scripts/backfill_historical.py`](../scripts/backfill_historical.py) — see [`docs/historical-data.md`](historical-data.md) for the full backfill workflow.
+
 1. Identify the trading day. Confirm the recap exists and is from Cameron (not a Warrior staff trader's recap).
 2. Watch the recap end-to-end. Take linear notes — ticker, time, what he did, why.
 3. For each entered ticker, write one record per the schema. Keep `notes` brief — one sentence — but unambiguous about why this counts as "actively-called".

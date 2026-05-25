@@ -5,6 +5,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import pytest
+
 from ross_trading.data._codec import decode_bar, decode_envelope
 from ross_trading.data.types import Timeframe
 from scripts.backfill_historical import (
@@ -60,6 +62,7 @@ def test_parse_alpha_vantage_daily_csv_writes_market_close_utc() -> None:
     assert all(b.timeframe == Timeframe.D1.value for b in bars)
 
 
+@pytest.mark.integration
 async def test_write_bars_uses_replay_recording_shape(tmp_path: Path) -> None:
     bars = parse_alpha_vantage_intraday_csv(
         INTRADAY_CSV,
@@ -79,6 +82,7 @@ async def test_write_bars_uses_replay_recording_shape(tmp_path: Path) -> None:
     assert decode_bar(payload) == bars[0]
 
 
+@pytest.mark.integration
 async def test_prepare_overwrite_bars_preserves_other_symbols(tmp_path: Path) -> None:
     existing_target = parse_alpha_vantage_intraday_csv(
         INTRADAY_CSV,
