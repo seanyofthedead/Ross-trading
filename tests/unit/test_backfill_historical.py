@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ross_trading.data._codec import decode_bar, decode_envelope
 from ross_trading.data.types import Timeframe
 from scripts.backfill_historical import (
+    _prepare_overwrite_bars,
     parse_alpha_vantage_daily_csv,
     parse_alpha_vantage_intraday_csv,
     write_bars,
@@ -76,3 +77,38 @@ async def test_write_bars_uses_replay_recording_shape(tmp_path: Path) -> None:
     event_type, payload = decode_envelope(lines[0])
     assert event_type.value == "bar"
     assert decode_bar(payload) == bars[0]
+
+
+async def test_prepare_overwrite_bars_preserves_other_symbols(tmp_path: Path) -> None:
+    existing_target = parse_alpha_vantage_intraday_csv(
+        INTRADAY_CSV,
+        symbol="AVTX",
+        wanted_days={date(2026, 5, 1)},
+    )
+    existing_other = parse_alpha_vantage_intraday_csv(
+        INTRADAY_CSV,
+        symbol="BBAI",
+        wanted_days={date(2026, 5, 1)},
+    )
+    await write_bars(tmp_path, [*existing_target, *existing_other])
+
+    replacement = parse_alpha_vantage_intraday_csv(
+        "timestamp,open,high,low,close,volume\n"
+        "2026-05-01 07:32:00,4.20,4.40,4.10,4.35,2500\n",
+        symbol="AVTX",
+        wanted_days={date(2026, 5, 1)},
+    )
+
+    bars = _prepare_overwrite_bars(
+        tmp_path,
+        {date(2026, 5, 1)},
+        {"AVTX"},
+        replacement,
+    )
+    await write_bars(tmp_path, bars)
+
+    path = tmp_path / "2026-05-01" / "bar.jsonl.gz"
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        decoded = [decode_bar(decode_envelope(line)[1]) for line in handle if line.strip()]
+    assert [bar.symbol for bar in decoded] == ["BBAI", "BBAI", "AVTX"]
+    assert decoded[-1].ts == datetime(2026, 5, 1, 11, 32, tzinfo=UTC)

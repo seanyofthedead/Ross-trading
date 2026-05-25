@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import gzip
 import json
 import os
 import sys
@@ -31,6 +32,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
+from ross_trading.data._codec import EventType, decode_bar, decode_envelope
 from ross_trading.data.recorder import FeedRecorder
 from ross_trading.data.types import Bar, Timeframe
 
@@ -180,11 +182,38 @@ def _resolve_request(args: argparse.Namespace) -> BackfillRequest:
     return BackfillRequest(symbols=frozenset(symbols), days=tuple(sorted(days)))
 
 
-def _overwrite_bar_files(recordings_dir: Path, days: Iterable[date]) -> None:
+def _read_bar_file(path: Path) -> list[Bar]:
+    if not path.exists():
+        return []
+    bars: list[Bar] = []
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            event_type, payload = decode_envelope(line)
+            if event_type != EventType.BAR:
+                msg = f"unexpected event type in {path}: {event_type.value}"
+                raise ValueError(msg)
+            bars.append(decode_bar(payload))
+    return bars
+
+
+def _prepare_overwrite_bars(
+    recordings_dir: Path,
+    days: Iterable[date],
+    symbols: Iterable[str],
+    new_bars: Sequence[Bar],
+) -> list[Bar]:
+    overwrite_symbols = frozenset(symbol.upper() for symbol in symbols)
+    preserved: list[Bar] = []
     for day in days:
         path = recordings_dir / day.isoformat() / "bar.jsonl.gz"
+        preserved.extend(
+            bar for bar in _read_bar_file(path) if bar.symbol.upper() not in overwrite_symbols
+        )
         if path.exists():
             path.unlink()
+    return [*preserved, *new_bars]
 
 
 def _daily_window(days: Sequence[date], lookback_days: int) -> tuple[date, date]:
@@ -344,7 +373,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
     if args.overwrite:
-        _overwrite_bar_files(args.recordings_dir, affected_days)
+        bars = _prepare_overwrite_bars(
+            args.recordings_dir,
+            affected_days,
+            request.symbols,
+            bars,
+        )
     asyncio.run(write_bars(args.recordings_dir, bars))
     return 0
 
