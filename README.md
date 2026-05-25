@@ -25,6 +25,12 @@ python -m ross_trading.journal.report --date YYYY-MM-DD
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design (modules, decision logic, validation approach, resolved decisions).
 
+## Docs
+
+- [`docs/ground_truth.md`](docs/ground_truth.md) — curator workflow for the hand-labelled oracle
+- [`docs/historical-data.md`](docs/historical-data.md) — backfill bar recordings from Alpha Vantage CSV
+- [`docs/drift-control.md`](docs/drift-control.md) — Drift CI severity rules and waiver process
+
 ## Plans
 
 In-flight implementation plans live in [`plans/`](plans/); merged plans are archived under [`plans/archive/`](plans/archive/).
