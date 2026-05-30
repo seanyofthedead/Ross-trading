@@ -30,6 +30,9 @@ logs/
 # the durable summary is tracked. Re-generate per-day files locally.
 reports/[0-9]*.md
 
+# Claude Code agent worktrees (ephemeral, used for isolated parallel agents)
+.claude/worktrees/
+
 # OS
 .DS_Store
 Thumbs.db
