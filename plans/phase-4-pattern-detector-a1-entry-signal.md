@@ -17,7 +17,7 @@
   `"gap_and_go_premarket_high"`, `"gap_and_go_bull_flag"`, `"micro_pullback"`, `"bull_flag"`, `"flat_top"`, `"first_candle_new_high"`.
   A seventh setup is a one-line `Literal` edit that mypy + Drift CI surface as a contract change; the doc mirror in §3.4 must move in lockstep (same discipline as `RejectionReasonLit` ↔ `RejectionReason`).
 - **Trigger provenance is on the signal.** `trigger_source` distinguishes a quote-`last` cross from a completed-bar-close predicate (the D6 path-independent rule: cross-triggers read the live quote, bar-stat triggers read completed bars). The signal records which it was, so the live/replay parity audit and the journal can both see it.
-- **Capacity-cap inputs travel with the signal.** `breakout_bar_volume` (and `timeframe`) are carried so the §6 capacity cap (≤1–2 % of avg 1-min volume, architecture line ~442) is enforceable by the sizer — capacity realism lives nowhere else. `entry_price` + `stop_price` make `stop_distance` and the §3.5 `shares = max_risk / stop_distance` reconstructable.
+- **Capacity-cap inputs travel with the signal.** `avg_1min_volume` is the §6 capacity-cap **denominator**: §6 caps shares at 1–2 % of the symbol's *average 1-minute volume* (`docs/architecture.md:444`) — a single breakout bar (possibly 10-sec or 5-min) is the wrong basis, so the cap input must be the average-1-minute volume, not the breakout bar's. `breakout_bar_volume` (with `timeframe`) is carried separately for the per-setup volume-*confirmation* predicate (e.g. "volume > avg_5min_volume", "≥ pole avg volume"), not for the cap. Capacity realism lives nowhere else. `entry_price` + `stop_price` make `stop_distance` and the §3.5 `shares = max_risk / stop_distance` reconstructable.
 - **Frozen, slotted, picklable** — same constraints as `ScannerPick` (`frozen=True, slots=True`), so the value is immutable end-to-end and survives the journal/replay round-trip.
 
 ---
@@ -27,7 +27,7 @@
 - [ ] `from ross_trading.patterns.types import EntrySignal, PatternId` works; `EntrySignal` is `frozen=True, slots=True` and picklable (round-trips through `pickle.dumps`/`loads` equal).
 - [ ] `PatternId` is a `Literal` with exactly the six values above; an exhaustiveness helper (`assert_never`-style, paralleling `loop.py::_lit_to_enum`) over `PatternId` type-checks under mypy `--strict`.
 - [ ] Constructing an `EntrySignal` with a `pattern_id` outside the `Literal` fails mypy `--strict` (negative-type test via a `# type: ignore`-free assertion or a typing test).
-- [ ] Field set matches D6: `ticker`, `pattern_id`, `timeframe`, `entry_price`, `stop_price`, `trigger_price`, `trigger_source`, `stop_basis`, `breakout_bar_volume`, `bar_ts`, `anchor_ts`, and `indicator_evidence` (immutable; `tuple[tuple[str, Decimal], ...]`).
+- [ ] Field set matches D6: `ticker`, `pattern_id`, `timeframe`, `entry_price`, `stop_price`, `trigger_price`, `trigger_source`, `stop_basis`, `avg_1min_volume` (cap denominator), `breakout_bar_volume` (volume-confirmation), `bar_ts`, `anchor_ts`, and `indicator_evidence` (immutable; `tuple[tuple[str, Decimal], ...]`).
 - [ ] All price fields are `Decimal`, volume is `int`, timestamps are `datetime`; no `float` anywhere.
 - [ ] Architecture §3.4 carries the mirrored `pattern_id` `Literal` block, with a note that it must stay in lockstep with `patterns/types.py::PatternId`.
 - [ ] mypy `--strict` passes on `src` and `tests`; `ruff check` passes; full pytest passes.
@@ -86,7 +86,8 @@ class EntrySignal:
     trigger_price: Decimal
     trigger_source: TriggerSource
     stop_basis: str               # e.g. "pullback_low", "flag_low", "premarket_low"
-    breakout_bar_volume: int      # capacity-cap input (§6)
+    avg_1min_volume: int          # §6 capacity-cap denominator (1-2% of symbol's avg 1-min volume)
+    breakout_bar_volume: int      # trigger bar's own volume, for per-setup volume-confirmation
     bar_ts: datetime              # completed bar's open time (left edge)
     anchor_ts: datetime           # the tick anchor the detector evaluated at
     indicator_evidence: tuple[tuple[str, Decimal], ...] = ()  # ("atr14", ...), ("vwap", ...)
@@ -99,7 +100,7 @@ Pure unit tests, no I/O:
 - **Immutability.** Field re-assignment raises `FrozenInstanceError`; `__slots__` blocks new attributes.
 - **Picklability / equality.** `pickle.loads(pickle.dumps(sig)) == sig`.
 - **`Literal` exhaustiveness.** A `match`/dispatch over `PatternId` with an `assert_never` default type-checks under mypy `--strict` and covers all six arms at runtime.
-- **Type discipline.** Construct a valid signal; assert all price fields are `Decimal`, `breakout_bar_volume` is `int`, timestamps are `datetime`.
+- **Type discipline.** Construct a valid signal; assert all price fields are `Decimal`, the volume fields (`avg_1min_volume`, `breakout_bar_volume`) are `int`, timestamps are `datetime`.
 - **No-fire convention.** A trivial helper/typing test asserting the detector return type is `EntrySignal | None` (documents the `None`-not-falsy rule for A2+).
 
 No integration test — this atom has no runtime behaviour beyond the value object.
