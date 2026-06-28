@@ -34,7 +34,7 @@ A driver loop should:
 | 0 | Ingestion contract correctness | — | `(ts,seq)` ordering + seq-gap detection + halt/correction events; live-vs-replay parity test green |
 | 1 | Execution domain model & ledger | 0 | orders/fills/positions tables + state machine + idempotency, migration applies, unit tests green |
 | 2 | Broker port + Fake + paper adapter | 1 | `BrokerClient` Protocol + `FakeBroker` + `AlpacaPaperBroker`; idempotent `submit_bracket`; contract tests green |
-| 3 | Risk supervisor / kill switch | 1 | `safety/` enforces max-loss, loser-lock, single-position, PDT/T+1; force-flatten; loop-gated; tests green |
+| 3 | Risk supervisor / kill switch | 1, 2 | `safety/` enforces max-loss, loser-lock, single-position, PDT/T+1; force-flatten; loop-gated; tests green |
 | 4 | Reconciliation (broker truth) | 2, 3 | startup + cadence reconcile ledger vs broker; divergence → kill switch; recovery test green |
 | 5 | Live signal→order wiring + event-driven exits | 2, 3, 4 | trading + position-management loops wired; exits consume order-event + quote streams (no polling); sizer Decimal/int; integration tests green on FakeBroker |
 | 6 | Go-live gate: paid SIP data, parity CI, paper soak | 0, 5 | full-SIP feed wired; bit-identical live-vs-replay CI gate enforced; float daily-refresh verified; micro-stakes paper soak runbook |
