@@ -271,6 +271,80 @@ async def test_bust_reduces_covering_bar_volume() -> None:
     assert snaps["AVTX"].bar.volume == 4_000_000
 
 
+async def test_correction_not_applied_before_known() -> None:
+    # A bust whose event time is after the scan anchor must NOT be folded in
+    # yet -- doing so would leak future data the live loop couldn't have seen.
+    trade = Tape(
+        symbol="AVTX",
+        exchange_ts=T0 + timedelta(seconds=10),
+        seq=7,
+        price=Decimal("5.50"),
+        size=1_000_000,
+    )
+    bust = Correction(
+        symbol="AVTX",
+        corrects_seq=7,
+        new_size=0,
+        new_price=None,
+        seq=99,
+        exchange_ts=T0 + timedelta(seconds=50),
+    )
+    assembler = _RecordingSnapshotAssembler(
+        m1_by_ticker={"AVTX": [_m1(1, offset_min=0, volume=5_000_000)]},
+        d1_by_ticker={},
+        quotes_by_ticker={"AVTX": [_quote(1, offset=0)]},
+        headlines_by_ticker={},
+        floats_by_ticker={},
+        tape_by_ticker={"AVTX": [trade]},
+        corrections_by_ticker={"AVTX": [bust]},
+    )
+    # Anchor BEFORE the bust's event time: volume is still the original.
+    before, _ = await assembler.assemble(
+        frozenset({"AVTX"}), T0 + timedelta(seconds=30),
+    )
+    assert before["AVTX"].bar.volume == 5_000_000
+    # Anchor AFTER the bust is known: now it is folded in.
+    after, _ = await assembler.assemble(
+        frozenset({"AVTX"}), T0 + timedelta(seconds=90),
+    )
+    assert after["AVTX"].bar.volume == 4_000_000
+
+
+async def test_correction_attributed_to_original_print_bar() -> None:
+    # The print is in the 0th-minute bar; the bust event lands in the *next*
+    # minute (no bar there). Attribution must follow the original print's
+    # time, not the correction event's time -- otherwise the bust is lost.
+    trade = Tape(
+        symbol="AVTX",
+        exchange_ts=T0 + timedelta(seconds=30),  # inside [T0, T0+60s)
+        seq=7,
+        price=Decimal("5.50"),
+        size=1_000_000,
+    )
+    bust = Correction(
+        symbol="AVTX",
+        corrects_seq=7,
+        new_size=0,
+        new_price=None,
+        seq=99,
+        exchange_ts=T0 + timedelta(seconds=90),  # next minute, no bar there
+    )
+    assembler = _RecordingSnapshotAssembler(
+        m1_by_ticker={"AVTX": [_m1(1, offset_min=0, volume=5_000_000)]},
+        d1_by_ticker={},
+        quotes_by_ticker={"AVTX": [_quote(1, offset=0)]},
+        headlines_by_ticker={},
+        floats_by_ticker={},
+        tape_by_ticker={"AVTX": [trade]},
+        corrections_by_ticker={"AVTX": [bust]},
+    )
+    snaps, _ = await assembler.assemble(
+        frozenset({"AVTX"}), T0 + timedelta(seconds=120),
+    )
+    # Folded into the 0th-minute bar (the print's bar), not dropped.
+    assert snaps["AVTX"].bar.volume == 4_000_000
+
+
 async def test_correction_resizes_covering_bar_volume() -> None:
     # A partial correction (1,000,000 -> 250,000) trims volume by the delta.
     trade = Tape(

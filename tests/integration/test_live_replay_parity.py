@@ -214,12 +214,19 @@ def _decision_fingerprint(engine: Engine) -> tuple[tuple[object, ...], ...]:
     return tuple(pick_rows) + tuple(decision_rows)
 
 
-def _pick_rel_volume(engine: Engine) -> Decimal:
+def _min_pick_rel_volume(engine: Engine) -> Decimal:
+    """Smallest rel-volume across the day's picks.
+
+    The bust only lands on ticks whose anchor is at/after the correction's
+    event time (no future-data leakage), so early-tick picks still carry
+    the uncorrected rel-volume. The *minimum* across the day is the robust,
+    anchor-order-independent signal that the bust was folded in.
+    """
     factory = create_session_factory(engine)
     with factory() as session:
-        pick = session.execute(select(Pick)).scalars().first()
-    assert pick is not None, "expected at least one pick"
-    return pick.rel_volume
+        rels = session.execute(select(Pick.rel_volume)).scalars().all()
+    assert rels, "expected at least one pick"
+    return min(rels)
 
 
 async def test_decisions_are_invariant_to_arrival_order(tmp_path: Path) -> None:
@@ -248,7 +255,11 @@ async def test_decisions_are_invariant_to_arrival_order(tmp_path: Path) -> None:
 
 
 async def test_bust_rewrites_rel_volume_deterministically(tmp_path: Path) -> None:
-    """A busted 1M-share print drops the M1 bar's rel-volume by exactly 1x."""
+    """A busted 1M-share print drops the M1 bar's rel-volume by exactly 1x.
+
+    Once the bust is known (anchor at/after its event time), rel-volume on
+    the covering bar drops from 6x to 5x; before then it is unchanged.
+    """
     universe_dir = _universe(tmp_path)
 
     with_bust_dir = tmp_path / "with_bust"
@@ -259,12 +270,12 @@ async def test_bust_rewrites_rel_volume_deterministically(tmp_path: Path) -> Non
     with_engine = await _replay_into_fresh_journal(with_bust_dir, universe_dir)
     without_engine = await _replay_into_fresh_journal(without_bust_dir, universe_dir)
     try:
-        with_rel = _pick_rel_volume(with_engine)
-        without_rel = _pick_rel_volume(without_engine)
+        with_rel = _min_pick_rel_volume(with_engine)
+        without_rel = _min_pick_rel_volume(without_engine)
     finally:
         with_engine.dispose()
         without_engine.dispose()
 
-    # 6M volume / 1M baseline = 6x; busting 1M -> 5M / 1M = 5x.
+    # 6M volume / 1M baseline = 6x; busting 1M -> 5M / 1M = 5x (post-bust ticks).
     assert without_rel == Decimal("6")
     assert with_rel == Decimal("5")

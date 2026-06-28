@@ -101,6 +101,7 @@ async def capture_session(
             tasks: list[asyncio.Task[None]] = [
                 asyncio.create_task(_capture_quotes(market, recorder, symbols)),
                 asyncio.create_task(_capture_tape(market, recorder, symbols)),
+                asyncio.create_task(_capture_halts(market, recorder, symbols)),
             ]
             for tf in timeframe_list:
                 tasks.append(
@@ -161,6 +162,20 @@ async def _capture_tape(
 ) -> None:
     async for trade in market.subscribe_tape(symbols):
         recorder.record_tape(trade)
+
+
+async def _capture_halts(
+    market: ReconnectingProvider,
+    recorder: FeedRecorder,
+    symbols: tuple[str, ...],
+) -> None:
+    """Persist typed halt/resume events so replay can suppress halted symbols.
+
+    Without this, a live recording would drop venue halts entirely and
+    replay could fire entries off a stale pre-halt quote on resume.
+    """
+    async for halt in market.subscribe_halts(symbols):
+        recorder.record_halt(halt)
 
 
 async def _capture_bars(
