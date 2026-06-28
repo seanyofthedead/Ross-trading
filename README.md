@@ -25,6 +25,14 @@ python -m ross_trading.journal.report --date YYYY-MM-DD
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design (modules, decision logic, validation approach, resolved decisions).
 
+### Recordings schema
+
+Market-data recordings are versioned (`data/_codec.py`, currently `SCHEMA_VERSION = 2`). The v2 build decodes older v1 recordings forever via synthesized defaults, so no migration is required to *read* them. To re-stamp a v1 archive as native v2 on disk (optional, non-destructive, idempotent):
+
+```bash
+python scripts/upgrade_recordings_v1_to_v2.py --source ./recordings   # writes ./recordings-v2
+```
+
 ## Plans
 
 In-flight implementation plans live in [`plans/`](plans/); merged plans are archived under [`plans/archive/`](plans/archive/).
