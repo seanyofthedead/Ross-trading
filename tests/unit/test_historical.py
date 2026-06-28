@@ -28,7 +28,7 @@ def _bar(symbol: str, day_offset: int, close: str, volume: int) -> Bar:
     ts = T0 - timedelta(days=day_offset)
     return Bar(
         symbol=symbol,
-        ts=ts,
+        exchange_ts=ts,
         timeframe="D1",
         open=Decimal(close),
         high=Decimal(close),
@@ -44,7 +44,7 @@ def _ohlc_bar(
     ts = T0 - timedelta(days=day_offset)
     return Bar(
         symbol=symbol,
-        ts=ts,
+        exchange_ts=ts,
         timeframe="D1",
         open=Decimal(low),
         high=Decimal(high),
@@ -146,7 +146,7 @@ async def test_populate_daily_bars_default_covers_full_trading_year(tmp_path: Pa
             weekday_bars.append(
                 Bar(
                     symbol="AVTX",
-                    ts=cursor,
+                    exchange_ts=cursor,
                     timeframe="D1",
                     open=Decimal("10"),
                     high=Decimal("10"),

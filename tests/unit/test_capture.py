@@ -21,6 +21,7 @@ from ross_trading.data.market_feed import Timeframe
 from ross_trading.data.types import (
     Bar,
     FloatRecord,
+    Halt,
     Headline,
     Quote,
     Side,
@@ -41,7 +42,7 @@ DAY = date(2026, 5, 4)
 def _quote(symbol: str, offset: int) -> Quote:
     return Quote(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         bid=Decimal("1.00"),
         ask=Decimal("1.01"),
         bid_size=100,
@@ -52,7 +53,7 @@ def _quote(symbol: str, offset: int) -> Quote:
 def _bar(symbol: str, offset: int, timeframe: str = "M1") -> Bar:
     return Bar(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         timeframe=timeframe,
         open=Decimal("1.00"),
         high=Decimal("1.05"),
@@ -65,7 +66,7 @@ def _bar(symbol: str, offset: int, timeframe: str = "M1") -> Bar:
 def _tape(symbol: str, offset: int) -> Tape:
     return Tape(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         price=Decimal("1.00"),
         size=100,
         side=Side.BUY,
@@ -319,6 +320,13 @@ async def test_capture_records_feed_gap_on_reconnect(tmp_path: Path) -> None:
         async def subscribe_tape(
             self, symbols: Iterable[str]
         ) -> AsyncIterator[Tape]:
+            del symbols
+            if False:
+                yield  # pragma: no cover
+
+        async def subscribe_halts(
+            self, symbols: Iterable[str]
+        ) -> AsyncIterator[Halt]:
             del symbols
             if False:
                 yield  # pragma: no cover

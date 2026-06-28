@@ -40,7 +40,7 @@ WINDOW_CLOSE = datetime(2025, 1, 2, 16, 0, tzinfo=UTC)  # 11:00 ET (exclusive)
 
 def _bar(symbol: str, ts: datetime, close: str = "5.50", volume: int = 5_000_000) -> Bar:
     return Bar(
-        symbol=symbol, ts=ts, timeframe="M1",
+        symbol=symbol, exchange_ts=ts, timeframe="M1",
         open=Decimal("5.00"), high=Decimal(close),
         low=Decimal("4.95"), close=Decimal(close), volume=volume,
     )

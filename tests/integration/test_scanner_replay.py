@@ -56,7 +56,7 @@ async def _record_passing_day(recordings_dir: Path, ticker: str) -> None:
     async with FeedRecorder(recordings_dir) as rec:
         rec.record_bar(Bar(
             symbol=ticker,
-            ts=datetime(
+            exchange_ts=datetime(
                 PREV_TRADING_DAY.year, PREV_TRADING_DAY.month, PREV_TRADING_DAY.day,
                 21, 0, tzinfo=UTC,
             ),
@@ -66,12 +66,12 @@ async def _record_passing_day(recordings_dir: Path, ticker: str) -> None:
             volume=1_000_000,
         ))
         rec.record_bar(Bar(
-            symbol=ticker, ts=WINDOW_OPEN, timeframe="M1",
+            symbol=ticker, exchange_ts=WINDOW_OPEN, timeframe="M1",
             open=Decimal("5.00"), high=Decimal("5.55"),
             low=Decimal("4.95"), close=Decimal("5.50"), volume=5_000_000,
         ))
         rec.record_quote(Quote(
-            symbol=ticker, ts=WINDOW_OPEN,
+            symbol=ticker, exchange_ts=WINDOW_OPEN,
             bid=Decimal("5.49"), ask=Decimal("5.51"),
             bid_size=500, ask_size=500,
         ))
@@ -94,7 +94,7 @@ async def _record_big_float_day(recordings_dir: Path, ticker: str) -> None:
     async with FeedRecorder(recordings_dir) as rec:
         rec.record_bar(Bar(
             symbol=ticker,
-            ts=datetime(
+            exchange_ts=datetime(
                 PREV_TRADING_DAY.year, PREV_TRADING_DAY.month, PREV_TRADING_DAY.day,
                 21, 0, tzinfo=UTC,
             ),
@@ -104,12 +104,12 @@ async def _record_big_float_day(recordings_dir: Path, ticker: str) -> None:
             volume=1_000_000,
         ))
         rec.record_bar(Bar(
-            symbol=ticker, ts=WINDOW_OPEN, timeframe="M1",
+            symbol=ticker, exchange_ts=WINDOW_OPEN, timeframe="M1",
             open=Decimal("5.00"), high=Decimal("5.55"),
             low=Decimal("4.95"), close=Decimal("5.50"), volume=5_000_000,
         ))
         rec.record_quote(Quote(
-            symbol=ticker, ts=WINDOW_OPEN,
+            symbol=ticker, exchange_ts=WINDOW_OPEN,
             bid=Decimal("5.49"), ask=Decimal("5.51"),
             bid_size=500, ask_size=500,
         ))

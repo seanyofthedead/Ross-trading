@@ -46,7 +46,7 @@ SESSION_START = datetime(2025, 1, 2, 12, 0, tzinfo=UTC)  # 7:00 AM EST
 def _quote(offset_s: int, bid: str, ask: str) -> Quote:
     return Quote(
         symbol="AVTX",
-        ts=SESSION_START + timedelta(seconds=offset_s),
+        exchange_ts=SESSION_START + timedelta(seconds=offset_s),
         bid=Decimal(bid),
         ask=Decimal(ask),
         bid_size=500,
@@ -57,7 +57,7 @@ def _quote(offset_s: int, bid: str, ask: str) -> Quote:
 def _bar(offset_s: int, close: str, volume: int = 50_000) -> Bar:
     return Bar(
         symbol="AVTX",
-        ts=SESSION_START + timedelta(seconds=offset_s),
+        exchange_ts=SESSION_START + timedelta(seconds=offset_s),
         timeframe="M1",
         open=Decimal(close),
         high=Decimal(close),
@@ -158,7 +158,7 @@ async def test_replay_realtime_with_real_clock_actually_paces(tmp_path: Path) ->
             rec.record_quote(
                 Quote(
                     symbol="AVTX",
-                    ts=SESSION_START + timedelta(milliseconds=offset_ms),
+                    exchange_ts=SESSION_START + timedelta(milliseconds=offset_ms),
                     bid=Decimal("1"),
                     ask=Decimal("1.01"),
                     bid_size=1,
@@ -191,7 +191,7 @@ async def test_replay_supports_relative_volume_and_ema_lookups(tmp_path: Path) -
             rec.record_bar(
                 Bar(
                     symbol="AVTX",
-                    ts=ts,
+                    exchange_ts=ts,
                     timeframe="D1",
                     open=Decimal("10"),
                     high=Decimal("10"),

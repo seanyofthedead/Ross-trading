@@ -58,7 +58,7 @@ import contextlib
 import json
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -83,11 +83,20 @@ from ross_trading.scanner.scanner import Scanner
 from ross_trading.scanner.types import ScannerSnapshot
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from sqlalchemy.engine import Engine
 
-    from ross_trading.data.types import Bar, FeedGap, FloatRecord, Headline, Quote
+    from ross_trading.data.types import (
+        Bar,
+        Correction,
+        FeedGap,
+        FloatRecord,
+        Halt,
+        Headline,
+        Quote,
+        Tape,
+    )
 
 # Pad after the last recorded event so the loop fires at least one final
 # tick that observes the freshest data and (if applicable) the freshest
@@ -127,6 +136,35 @@ class _StaticUniverseProvider:
 
 
 _T = TypeVar("_T")
+_Seqd = TypeVar("_Seqd", "Bar", "Quote", "Tape")
+
+# M1 bars cover a 60-second interval [open, open + 60s); used to attribute
+# a trade correction to the bar whose window contained the amended print.
+_M1_INTERVAL = timedelta(minutes=1)
+
+
+def _ordered_unique(events: Iterable[_Seqd]) -> tuple[_Seqd, ...]:
+    """Sort sequenced market events by ``(exchange_ts, seq)`` and dedup.
+
+    The as-of contract (Wave 0): order strictly on ``(exchange_ts,
+    seq)`` so identical inputs in any arrival order assemble to identical
+    snapshots, and drop true duplicates on the scoped ``seq`` key (the
+    caller passes one ``(symbol, channel)`` stream at a time, so ``seq``
+    alone is the in-scope identity). ``seq == 0`` is the "unsequenced"
+    sentinel -- legacy/unsequenced events are never collapsed, since a
+    producer that supplies no sequence numbers gives us no duplicate key
+    to trust.
+    """
+    ordered = sorted(events, key=lambda e: (e.exchange_ts, e.seq))
+    seen: set[int] = set()
+    out: list[_Seqd] = []
+    for event in ordered:
+        if event.seq > 0:
+            if event.seq in seen:
+                continue
+            seen.add(event.seq)
+        out.append(event)
+    return tuple(out)
 
 
 def _last_at_or_before(
@@ -161,6 +199,67 @@ def _baseline_from(d1_prior: Sequence[Bar], window_days: int) -> Decimal | None:
     return Decimal(total_volume) / Decimal(len(window))
 
 
+def _halt_state_at(
+    halts: Sequence[Halt],
+    anchor_ts: datetime,
+) -> tuple[str | None, datetime | None]:
+    """Resolve the active halt state for one symbol as-of ``anchor_ts``.
+
+    Returns ``(state, boundary_ts)`` of the latest halt/resume event at or
+    before the anchor: ``("halted", ts)`` while suspended, ``("resumed",
+    ts)`` after the resume, or ``(None, None)`` if no halt event applies.
+    """
+    latest = _last_at_or_before(halts, anchor_ts, lambda h: h.exchange_ts)
+    if latest is None:
+        return None, None
+    return latest.state, latest.exchange_ts
+
+
+def _apply_corrections(
+    m1: Mapping[str, tuple[Bar, ...]],
+    tape: Mapping[str, tuple[Tape, ...]],
+    corrections: Mapping[str, tuple[Correction, ...]],
+) -> dict[str, tuple[Bar, ...]]:
+    """Fold trade corrections/busts into the volume of the covering M1 bar.
+
+    The volume delta is ``new_size - original_size`` where the original
+    size is looked up from the amended tape print (by ``corrects_seq``);
+    a bust is just ``new_size == 0``. The correction is attributed to the
+    M1 bar whose ``[open, open + 60s)`` window contains the correction's
+    ``exchange_ts``. Deterministic and append-only: the recorded bars and
+    prints are never mutated on disk -- this recomputes the adjusted view.
+    """
+    if not corrections:
+        return dict(m1)
+    result: dict[str, list[Bar]] = {sym: list(bars) for sym, bars in m1.items()}
+    for sym, corrs in corrections.items():
+        bars = result.get(sym)
+        if not bars:
+            continue
+        by_seq = {t.seq: t for t in tape.get(sym, ()) if t.seq > 0}
+        for corr in corrs:
+            original = by_seq.get(corr.corrects_seq)
+            original_size = original.size if original is not None else 0
+            new_size = corr.new_size if corr.new_size is not None else 0
+            delta = new_size - original_size
+            if delta == 0:
+                continue
+            idx = _bar_index_covering(bars, corr.exchange_ts)
+            if idx is None:
+                continue
+            target = bars[idx]
+            bars[idx] = replace(target, volume=max(0, target.volume + delta))
+    return {sym: tuple(bars) for sym, bars in result.items()}
+
+
+def _bar_index_covering(bars: Sequence[Bar], when: datetime) -> int | None:
+    """Index of the M1 bar whose ``[open, open + 60s)`` window holds ``when``."""
+    for idx, bar in enumerate(bars):
+        if bar.exchange_ts <= when < bar.exchange_ts + _M1_INTERVAL:
+            return idx
+    return None
+
+
 class _RecordingSnapshotAssembler:
     """In-memory :class:`SnapshotAssembler` built from recorded events.
 
@@ -176,20 +275,37 @@ class _RecordingSnapshotAssembler:
         quotes_by_ticker: Mapping[str, Sequence[Quote]],
         headlines_by_ticker: Mapping[str, Sequence[Headline]],
         floats_by_ticker: Mapping[str, FloatRecord],
+        tape_by_ticker: Mapping[str, Sequence[Tape]] | None = None,
+        halts_by_ticker: Mapping[str, Sequence[Halt]] | None = None,
+        corrections_by_ticker: Mapping[str, Sequence[Correction]] | None = None,
         baseline_window_days: int = 30,
         news_lookback_hours: int = 24,
     ) -> None:
-        self._m1 = {
-            t.upper(): tuple(sorted(bs, key=lambda b: b.ts))
-            for t, bs in m1_by_ticker.items()
+        ordered_m1 = {
+            t.upper(): _ordered_unique(bs) for t, bs in m1_by_ticker.items()
         }
+        ordered_tape = {
+            t.upper(): _ordered_unique(ts)
+            for t, ts in (tape_by_ticker or {}).items()
+        }
+        ordered_corrections = {
+            t.upper(): tuple(sorted(cs, key=lambda c: (c.exchange_ts, c.seq)))
+            for t, cs in (corrections_by_ticker or {}).items()
+        }
+        # Corrections/busts adjust the volume of the M1 bar that covered
+        # the amended print, so rel-vol reflects the bust deterministically
+        # in replay. The originals stay untouched in the recording; the
+        # adjustment is recomputed here from the append-only delta.
+        self._m1 = _apply_corrections(ordered_m1, ordered_tape, ordered_corrections)
         self._d1 = {
-            t.upper(): tuple(sorted(bs, key=lambda b: b.ts))
-            for t, bs in d1_by_ticker.items()
+            t.upper(): _ordered_unique(bs) for t, bs in d1_by_ticker.items()
         }
         self._quotes = {
-            t.upper(): tuple(sorted(qs, key=lambda q: q.ts))
-            for t, qs in quotes_by_ticker.items()
+            t.upper(): _ordered_unique(qs) for t, qs in quotes_by_ticker.items()
+        }
+        self._halts = {
+            t.upper(): tuple(sorted(hs, key=lambda h: (h.exchange_ts, h.seq)))
+            for t, hs in (halts_by_ticker or {}).items()
         }
         self._headlines = {
             t.upper(): tuple(sorted(hs, key=lambda h: h.ts))
@@ -231,6 +347,14 @@ class _RecordingSnapshotAssembler:
         news_floor = anchor_ts - self._news_lookback
         for ticker in universe:
             t = ticker.upper()
+            halt_state, halt_boundary = _halt_state_at(
+                self._halts.get(t, ()), anchor_ts,
+            )
+            if halt_state == "halted":
+                # Symbol is in a venue halt as-of the anchor -- it is not
+                # tradeable, so omit it entirely rather than letting the
+                # scanner act on a stale pre-halt price.
+                continue
             bar = _last_at_or_before(
                 self._m1.get(t, ()), anchor_ts, lambda b: b.ts,
             )
@@ -239,10 +363,24 @@ class _RecordingSnapshotAssembler:
             quote = _last_at_or_before(
                 self._quotes.get(t, ()), anchor_ts, lambda q: q.ts,
             )
+            # After a resume, refuse to bridge a pre-halt quote: a quote
+            # whose exchange_ts predates the resume boundary is stale, so
+            # don't price ``last`` off it and don't count it toward the
+            # staleness watermark until a fresh post-resume quote arrives.
+            if (
+                quote is not None
+                and halt_state == "resumed"
+                and halt_boundary is not None
+                and quote.exchange_ts < halt_boundary
+            ):
+                quote = None
             if quote is not None:
                 last = (quote.bid + quote.ask) / Decimal(2)
-                if latest_quote_ts is None or quote.ts > latest_quote_ts:
-                    latest_quote_ts = quote.ts
+                # Staleness keys on ingest_ts (local receipt), not the
+                # exchange/as-of timestamp -- the loop compares against
+                # wall-clock now.
+                if latest_quote_ts is None or quote.ingest_ts > latest_quote_ts:
+                    latest_quote_ts = quote.ingest_ts
             else:
                 last = bar.close
             d1_prior = tuple(
@@ -299,6 +437,9 @@ async def _load_assembler(
     m1: dict[str, list[Bar]] = {t: [] for t in universe}
     d1: dict[str, list[Bar]] = {t: [] for t in universe}
     quotes: dict[str, list[Quote]] = {t: [] for t in universe}
+    tape: dict[str, list[Tape]] = {t: [] for t in universe}
+    halts: dict[str, list[Halt]] = {t: [] for t in universe}
+    corrections: dict[str, list[Correction]] = {t: [] for t in universe}
     headlines: dict[str, list[Headline]] = {t: [] for t in universe}
     floats: dict[str, FloatRecord] = {}
 
@@ -308,6 +449,12 @@ async def _load_assembler(
         d1.setdefault(bar.symbol.upper(), []).append(bar)
     async for q in provider.subscribe_quotes(universe):
         quotes.setdefault(q.symbol.upper(), []).append(q)
+    async for trade in provider.subscribe_tape(universe):
+        tape.setdefault(trade.symbol.upper(), []).append(trade)
+    async for halt in provider.subscribe_halts(universe):
+        halts.setdefault(halt.symbol.upper(), []).append(halt)
+    async for corr in provider.subscribe_corrections(universe):
+        corrections.setdefault(corr.symbol.upper(), []).append(corr)
     async for h in provider.subscribe_headlines(universe):
         headlines.setdefault(h.ticker.upper(), []).append(h)
     for t in universe:
@@ -322,6 +469,9 @@ async def _load_assembler(
         quotes_by_ticker=quotes,
         headlines_by_ticker=headlines,
         floats_by_ticker=floats,
+        tape_by_ticker=tape,
+        halts_by_ticker=halts,
+        corrections_by_ticker=corrections,
     )
 
 

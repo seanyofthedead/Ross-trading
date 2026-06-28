@@ -51,7 +51,7 @@ WINDOW_OPEN = datetime(2025, 1, 2, 12, 0, tzinfo=UTC)
 
 def _bar(symbol: str, ts: datetime) -> Bar:
     return Bar(
-        symbol=symbol, ts=ts, timeframe="M1",
+        symbol=symbol, exchange_ts=ts, timeframe="M1",
         open=Decimal("5.00"), high=Decimal("5.50"),
         low=Decimal("4.95"), close=Decimal("5.50"), volume=5_000_000,
     )
@@ -182,7 +182,7 @@ def _failing_snap_rel_volume(symbol: str, ts: datetime) -> ScannerSnapshot:
     """Snapshot that fails the rel_volume filter (volume too low for 5x)."""
     return ScannerSnapshot(
         bar=Bar(
-            symbol=symbol, ts=ts, timeframe="M1",
+            symbol=symbol, exchange_ts=ts, timeframe="M1",
             open=Decimal("5.00"), high=Decimal("5.50"),
             low=Decimal("4.95"), close=Decimal("5.50"),
             volume=10_000,  # 0.01x baseline -> rel_volume reject
@@ -202,7 +202,7 @@ def _failing_snap_pct_change(symbol: str, ts: datetime) -> ScannerSnapshot:
     """Snapshot that passes rel_volume but fails pct_change (+8% < 10% default)."""
     return ScannerSnapshot(
         bar=Bar(
-            symbol=symbol, ts=ts, timeframe="M1",
+            symbol=symbol, exchange_ts=ts, timeframe="M1",
             open=Decimal("5.00"), high=Decimal("5.40"),
             low=Decimal("4.95"), close=Decimal("5.40"), volume=5_000_000,
         ),

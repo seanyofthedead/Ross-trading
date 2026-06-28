@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
     from datetime import datetime
 
-    from ross_trading.data.types import Bar, Quote, Tape
+    from ross_trading.data.types import Bar, Halt, Quote, Tape
 
 
 class _Stub:
@@ -51,6 +51,14 @@ class _Stub:
     def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]:
         del symbols
         return self._empty_tape()
+
+    async def _empty_halts(self) -> AsyncIterator[Halt]:
+        if False:
+            yield  # pragma: no cover
+
+    def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
+        del symbols
+        return self._empty_halts()
 
     async def historical_bars(
         self,

@@ -26,7 +26,7 @@ OUTSIDE_TS = datetime(2025, 1, 2, 6, 0, tzinfo=UTC)  # 01:00 ET
 def _snap(symbol: str, last: str = "5.50", prev_close: str = "5.00") -> ScannerSnapshot:
     bar = Bar(
         symbol=symbol,
-        ts=INSIDE_TS,
+        exchange_ts=INSIDE_TS,
         timeframe="M1",
         open=Decimal("5.00"),
         high=Decimal(last),
@@ -140,7 +140,7 @@ async def test_no_picks_records_scan_with_one_rejection() -> None:
     from ross_trading.journal.models import RejectionReason
     snap = ScannerSnapshot(
         bar=Bar(
-            symbol="AVTX", ts=INSIDE_TS, timeframe="M1",
+            symbol="AVTX", exchange_ts=INSIDE_TS, timeframe="M1",
             open=Decimal("5"), high=Decimal("5.5"), low=Decimal("4.95"),
             close=Decimal("5.5"), volume=10_000,  # 0.01x baseline -> reject
         ),
@@ -352,7 +352,7 @@ async def test_tick_with_mixed_picks_and_rejections_records_one_scan() -> None:
     good = _snap("GOOD", last="5.50")
     bad_volume = ScannerSnapshot(
         bar=Bar(
-            symbol="BAD_VOL", ts=INSIDE_TS, timeframe="M1",
+            symbol="BAD_VOL", exchange_ts=INSIDE_TS, timeframe="M1",
             open=Decimal("5"), high=Decimal("5.5"), low=Decimal("4.95"),
             close=Decimal("5.5"), volume=10_000,  # rel_volume reject
         ),

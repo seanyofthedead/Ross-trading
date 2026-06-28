@@ -98,6 +98,11 @@ class ScannerLoop:
             return
         universe = await self._universe_provider.list_symbols(anchor_ts.date())
         snapshot, most_recent_quote_ts = await self._assembler.assemble(universe, anchor_ts)
+        # ``most_recent_quote_ts`` is an ``ingest_ts`` (local receipt), so
+        # comparing it to wall-clock ``anchor_ts`` measures a genuinely
+        # dead feed. This is distinct from a venue *halt* (the assembler
+        # omits halted symbols, so they don't masquerade as staleness) and
+        # from a *feed gap* (a seq discontinuity surfaced via on_feed_gap).
         if most_recent_quote_ts is not None:
             staleness_s = (anchor_ts - most_recent_quote_ts).total_seconds()
             if staleness_s > self._staleness_threshold_s:

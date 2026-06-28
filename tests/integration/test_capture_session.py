@@ -20,7 +20,7 @@ from ross_trading.core.clock import VirtualClock
 from ross_trading.core.errors import FeedDisconnected
 from ross_trading.data.capture import capture_session
 from ross_trading.data.market_feed import Timeframe
-from ross_trading.data.types import Bar, FloatRecord, Quote, Tape
+from ross_trading.data.types import Bar, FloatRecord, Halt, Quote, Tape
 from ross_trading.journal.engine import (
     create_journal_engine,
     create_session_factory,
@@ -46,7 +46,7 @@ WINDOW_OPEN = datetime(2025, 1, 2, 12, 0, tzinfo=UTC)
 def _passing_d1() -> Bar:
     return Bar(
         symbol="AVTX",
-        ts=datetime(
+        exchange_ts=datetime(
             PREV_TRADING_DAY.year, PREV_TRADING_DAY.month, PREV_TRADING_DAY.day,
             21, 0, tzinfo=UTC,
         ),
@@ -60,7 +60,7 @@ def _passing_d1() -> Bar:
 def _passing_m1(offset_s: int = 0) -> Bar:
     return Bar(
         symbol="AVTX",
-        ts=WINDOW_OPEN + timedelta(seconds=offset_s),
+        exchange_ts=WINDOW_OPEN + timedelta(seconds=offset_s),
         timeframe="M1",
         open=Decimal("5.00"), high=Decimal("5.55"),
         low=Decimal("4.95"), close=Decimal("5.50"),
@@ -70,7 +70,7 @@ def _passing_m1(offset_s: int = 0) -> Bar:
 
 def _passing_quote() -> Quote:
     return Quote(
-        symbol="AVTX", ts=WINDOW_OPEN,
+        symbol="AVTX", exchange_ts=WINDOW_OPEN,
         bid=Decimal("5.49"), ask=Decimal("5.51"),
         bid_size=500, ask_size=500,
     )
@@ -133,6 +133,11 @@ class _FlakyDayMarket:
             emitted += 1
 
     async def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]:
+        del symbols
+        if False:
+            yield  # pragma: no cover
+
+    async def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
         del symbols
         if False:
             yield  # pragma: no cover

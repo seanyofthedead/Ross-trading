@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
     from datetime import datetime
 
-    from ross_trading.data.types import Bar, Quote, Tape
+    from ross_trading.data.types import Bar, Halt, Quote, Tape
 
 
 class FakeMarketDataProvider:
@@ -28,11 +28,13 @@ class FakeMarketDataProvider:
         quotes: Sequence[Quote] = (),
         bars: Sequence[Bar] = (),
         tape: Sequence[Tape] = (),
+        halts: Sequence[Halt] = (),
         timeframes: Iterable[Timeframe] = (Timeframe.M1, Timeframe.D1),
     ) -> None:
         self._quotes = list(quotes)
         self._bars = list(bars)
         self._tape = list(tape)
+        self._halts = list(halts)
         self._timeframes = frozenset(timeframes)
         self.connect_calls = 0
         self.disconnect_calls = 0
@@ -68,6 +70,12 @@ class FakeMarketDataProvider:
         for trade in self._tape:
             if trade.symbol.upper() in wanted:
                 yield trade
+
+    async def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
+        wanted = {s.upper() for s in symbols}
+        for halt in self._halts:
+            if halt.symbol.upper() in wanted:
+                yield halt
 
     async def historical_bars(
         self,
