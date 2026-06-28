@@ -98,6 +98,14 @@ async def capture_session(
                 await upstream_news.connect()
                 news_connected = True
             await _capture_floats(upstream_float, recorder, symbols, as_of, real_clock)
+            # Trade corrections/busts are intentionally NOT captured here.
+            # `MarketDataProvider` has no correction subscription: real feeds
+            # deliver corrections flagged on the trade stream (vendor-specific),
+            # not a separate channel, so the port shape isn't knowable until a
+            # vendor is chosen. Live correction-sourcing lands with vendor
+            # integration (Wave 5/6); replay already consumes recorded
+            # corrections, and `FeedRecorder.record_correction` is ready for
+            # that wiring. See plans/waves/HANDOFF.md ("explicitly deferred").
             tasks: list[asyncio.Task[None]] = [
                 asyncio.create_task(_capture_quotes(market, recorder, symbols)),
                 asyncio.create_task(_capture_tape(market, recorder, symbols)),

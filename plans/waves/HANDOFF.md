@@ -109,6 +109,12 @@ Move execution to **IBKR** and/or signal data to **Databento** when any fire:
 - **Building detectors before the execution skeleton** — the repo's next planned atom was the
   `EntrySignal` value object; these waves intentionally resequence the ledger/kill-switch/
   reconciliation ahead of more detector work, since that's where the unguarded money risk is.
+- **Live trade-correction sourcing (Wave 0)** — the typed `Correction`/bust event, recorder, and
+  replay handling all ship in Wave 0, but `capture_session` does **not** subscribe a live
+  correction stream: real feeds deliver corrections flagged on the *trade* stream (vendor-specific),
+  not a separate channel, so the `MarketDataProvider` port shape isn't knowable until a vendor is
+  chosen. Wiring lands with vendor integration (Wave 5/6); `FeedRecorder.record_correction` is ready.
+  (Halts, by contrast, are a clean separate stream and are captured live in Wave 0.)
 
 ## Open decision-issues these waves resolve
 
