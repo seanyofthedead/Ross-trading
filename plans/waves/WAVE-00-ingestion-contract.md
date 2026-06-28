@@ -16,7 +16,7 @@ status: not_started
 
 ## Decisions carried in (from the review)
 
-- **Order by `(ts, seq)`, dedup on `seq`.** Sorting on `ts` alone is non-deterministic on ties and cannot detect dupes/reorders. The single highest-value change.
+- **Order by `(ts, seq)`, dedup on the scoped `(ticker, channel, seq)` key.** Sorting on `ts` alone is non-deterministic on ties and cannot detect dupes/reorders; `seq` is only monotonic per `(ticker, channel)`, so the dedup key must carry that scope. The single highest-value change.
 - **Three timestamps, not one.** Persist `exchange_ts` (participant/exchange), `vendor_ts` (vendor send) and `ingest_ts` (local receipt). All *as-of* logic keys off `exchange_ts`; staleness/watermark keys off `ingest_ts`. The codec already records two (`data/_codec.py` `ts`/`ts_recorded`) — formalize three.
 - **Gaps from sequence discontinuity, not socket lifecycle.** `ReconnectingProvider` currently emits `FeedGap` only on `FeedDisconnected` (`data/reconnect.py`). A silent drop must still surface a `FeedGap` via per-channel seq discontinuity.
 - **Halts are a typed event.** Add a `Halt` event distinct from `FeedGap`; trading the resume off a stale pre-halt `last` is a real-money error.
@@ -38,7 +38,7 @@ Out: brokers, orders, execution, risk, reconciliation (Waves 1+). No new data ve
 | Edit | `src/ross_trading/data/recorder.py` | Persist new fields/events; corrections as append-only deltas with audit fields. |
 | Edit | `src/ross_trading/data/reconnect.py` | Per-channel seq tracking; emit `FeedGap` on seq discontinuity; emit/propagate `Halt`. |
 | Edit | `src/ross_trading/data/market_feed.py` | Extend `MarketDataProvider` protocol with halt subscription + seq contract docs. |
-| Edit | `src/ross_trading/scanner/assembler.py` | As-of selection orders/dedups by `(exchange_ts, seq)`; refuse to bridge gap/halt sentinels. |
+| Edit | `src/ross_trading/scanner/assembler.py` | As-of selection orders by `(exchange_ts, seq)`, dedups on `(ticker, channel, seq)`; refuse to bridge gap/halt sentinels. |
 | Edit | `src/ross_trading/scanner/replay.py` | `_last_at_or_before` keys on `(exchange_ts, seq)`; reproduce halts/corrections deterministically. |
 | Edit | `src/ross_trading/data/providers/replay.py` | Replay emits new fields/events in recorded order. |
 | Edit | `src/ross_trading/scanner/loop.py` | Staleness uses `ingest_ts`; distinguish stale-feed vs halt vs gap. |
@@ -84,7 +84,7 @@ class Correction:                # also covers busts (qty/price -> 0 == bust)
 ## Acceptance criteria
 
 - [ ] `Quote`/`Tape`/`Bar` carry `seq` + the three timestamps; all `Decimal` prices, `int` volume, tz-aware UTC datetimes; no `float`.
-- [ ] Assembler and replay select as-of by `(exchange_ts, seq)` and dedup on `seq`; identical inputs in any arrival order produce identical snapshots.
+- [ ] Assembler and replay order as-of by `(exchange_ts, seq)` and dedup on a scoped `(ticker, channel, seq)` key — `seq` is only monotonic per `(ticker, channel)`, so de-duping on bare `seq` would discard valid events when different symbols/channels reuse the same number; identical inputs in any arrival order produce identical snapshots.
 - [ ] A dropped seq (e.g. 1,2,4) surfaces a `FeedGap` for that channel even with the socket up; detectors refuse to bridge it.
 - [ ] `Halt`/resume is a typed event, distinct from `FeedGap`; a resume does not fire entries off a pre-halt stale `last`.
 - [ ] A `Correction`/bust adjusts recorded volume via append-only delta; original + corrected both visible in the recording; rel-vol reflects the correction deterministically in replay.
@@ -104,7 +104,7 @@ Drive the assembler with a hand-built event stream that is (a) shuffled in arriv
 - [ ] 2a. **Back-compat:** keep all v1 decoders, version-dispatch in `decode_envelope`, synthesize defaults for v1 payloads; add `tests/unit/test_codec_backcompat.py` with a captured v1 fixture.
 - [ ] 2b. **Migration:** write idempotent `scripts/upgrade_recordings_v1_to_v2.py` for any on-disk recordings; document it (a one-liner in `README.md`/`docs/` on when to run it).
 - [ ] 3. Add per-channel seq tracking + discontinuity gap detection + halt propagation in `reconnect.py`.
-- [ ] 4. Make assembler + replay order/dedup on `(exchange_ts, seq)` and honor halt/correction sentinels.
+- [ ] 4. Make assembler + replay order on `(exchange_ts, seq)` and dedup on `(ticker, channel, seq)`, honoring halt/correction sentinels.
 - [ ] 5. Point staleness at `ingest_ts`; separate stale/halt/gap handling in `loop.py`.
 - [ ] 6. Write the parity integration test + unit contract tests.
 - [ ] 7. ruff / mypy --strict / pytest green; CI green on feature branch.
@@ -115,7 +115,8 @@ Drive the assembler with a hand-built event stream that is (a) shuffled in arriv
 Implement plans/waves/WAVE-00-ingestion-contract.md in the ross-trading repo, on a new
 feature branch. This is the ingestion-correctness wave: add per-message sequence numbers
 and a three-way timestamp split to Quote/Tape/Bar; make the SnapshotAssembler and the
-replay path order and dedup strictly on (exchange_ts, seq); detect feed gaps from
+replay path order strictly on (exchange_ts, seq) and dedup on the scoped
+(ticker, channel, seq) key; detect feed gaps from
 sequence discontinuity rather than only on socket disconnect; add a typed Halt event and
 an append-only Correction/bust path. Follow the repo's existing conventions (frozen
 slotted dataclasses, Decimal prices, tz-aware UTC, mypy --strict, ruff, pytest), mirroring

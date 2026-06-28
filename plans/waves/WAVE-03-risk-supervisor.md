@@ -1,7 +1,7 @@
 ---
 wave: 3
 title: Risk supervisor / kill switch
-depends_on: [1]
+depends_on: [1, 2]
 advance_gate: "safety/ package enforces daily max-loss, 3-consecutive-loser lock, single-position-at-a-time, PDT and T+1 cash-settlement guards; a force-flatten authority exists (manual + automatic) and calls broker.flatten; the loop is gated by a day_locked()/can_trade() check before any entry; unit + integration tests (against FakeBroker) green; mypy --strict + ruff + pytest green."
 status: not_started
 ---
@@ -12,7 +12,7 @@ status: not_started
 
 **Goal:** Build the risk supervisor / kill switch specified in §3.8 and §5 of `docs/architecture.md`, which today is an empty `safety/` package. It is the authority that can refuse new entries and force-flatten everything, and it must exist (with manual force-flatten at minimum) before the system is trusted with real size.
 
-**Why before reconciliation/wiring:** The kill switch is the blast-radius limiter. Building it early — against the Ledger (Wave 1) and `FakeBroker` (available once Wave 2 lands, but the gate only needs Wave 1) — means every later integration runs under a supervisor that can stop it.
+**Why before reconciliation/wiring:** The kill switch is the blast-radius limiter. Building it early — against the Ledger (Wave 1) and the `broker.flatten` / `FakeBroker` interfaces (Wave 2), both of which the advance gate exercises — means every later integration runs under a supervisor that can stop it.
 
 ## Decisions carried in
 
