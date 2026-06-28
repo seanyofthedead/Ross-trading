@@ -137,6 +137,31 @@ async def test_capture_subscribes_each_requested_timeframe(tmp_path: Path) -> No
     assert len(bar_lines) == 3
 
 
+async def test_capture_records_halts(tmp_path: Path) -> None:
+    halt = Halt(
+        symbol="AVTX",
+        state="halted",
+        seq=1,
+        exchange_ts=T0 + timedelta(seconds=5),
+    )
+    resume = Halt(
+        symbol="AVTX",
+        state="resumed",
+        seq=2,
+        exchange_ts=T0 + timedelta(seconds=10),
+    )
+    upstream = FakeMarketDataProvider(halts=[halt, resume])
+    await capture_session(
+        upstream_market_data=upstream,
+        upstream_news=None,
+        upstream_float=None,
+        universe=["AVTX"],
+        output_dir=tmp_path,
+        timeframes=(Timeframe.M1,),
+    )
+    assert len(_read_gz_lines(tmp_path / DAY.isoformat() / "halt.jsonl.gz")) == 2
+
+
 async def test_capture_records_tape(tmp_path: Path) -> None:
     upstream = FakeMarketDataProvider(
         tape=[_tape("AVTX", 0), _tape("AVTX", 1), _tape("BBAI", 2)],

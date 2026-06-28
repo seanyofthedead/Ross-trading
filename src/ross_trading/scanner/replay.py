@@ -215,49 +215,41 @@ def _halt_state_at(
     return latest.state, latest.exchange_ts
 
 
-def _apply_corrections(
-    m1: Mapping[str, tuple[Bar, ...]],
-    tape: Mapping[str, tuple[Tape, ...]],
-    corrections: Mapping[str, tuple[Correction, ...]],
-) -> dict[str, tuple[Bar, ...]]:
-    """Fold trade corrections/busts into the volume of the covering M1 bar.
+def _correction_volume_delta(
+    bar: Bar,
+    anchor_ts: datetime,
+    corrections: Sequence[Correction],
+    tape_by_seq: Mapping[int, Tape],
+) -> int:
+    """Net volume delta to apply to ``bar`` from corrections known as-of anchor.
 
-    The volume delta is ``new_size - original_size`` where the original
-    size is looked up from the amended tape print (by ``corrects_seq``);
-    a bust is just ``new_size == 0``. The correction is attributed to the
-    M1 bar whose ``[open, open + 60s)`` window contains the correction's
-    ``exchange_ts``. Deterministic and append-only: the recorded bars and
-    prints are never mutated on disk -- this recomputes the adjusted view.
+    Two as-of rules keep live and replay bit-identical (the whole point of
+    the wave):
+
+    - **Only-when-known:** a correction is applied only once
+      ``corr.exchange_ts <= anchor_ts``. Folding a 10:00 bust into a 09:45
+      scan would leak future data the live loop could not have seen.
+    - **Attribute to the amended print's bar:** the delta lands on the M1
+      bar that covered the *original* print (resolved via ``corrects_seq``
+      -> its ``exchange_ts``), not the bar of the later correction event --
+      a 09:31 print busted at 09:40 must reduce the 09:31 bar.
+
+    A correction whose original print is unknown (not on the recorded tape)
+    can't be attributed and is skipped. A bust is ``new_size == 0``.
     """
-    if not corrections:
-        return dict(m1)
-    result: dict[str, list[Bar]] = {sym: list(bars) for sym, bars in m1.items()}
-    for sym, corrs in corrections.items():
-        bars = result.get(sym)
-        if not bars:
+    bar_end = bar.exchange_ts + _M1_INTERVAL
+    delta = 0
+    for corr in corrections:
+        if corr.exchange_ts > anchor_ts:
             continue
-        by_seq = {t.seq: t for t in tape.get(sym, ()) if t.seq > 0}
-        for corr in corrs:
-            original = by_seq.get(corr.corrects_seq)
-            original_size = original.size if original is not None else 0
-            new_size = corr.new_size if corr.new_size is not None else 0
-            delta = new_size - original_size
-            if delta == 0:
-                continue
-            idx = _bar_index_covering(bars, corr.exchange_ts)
-            if idx is None:
-                continue
-            target = bars[idx]
-            bars[idx] = replace(target, volume=max(0, target.volume + delta))
-    return {sym: tuple(bars) for sym, bars in result.items()}
-
-
-def _bar_index_covering(bars: Sequence[Bar], when: datetime) -> int | None:
-    """Index of the M1 bar whose ``[open, open + 60s)`` window holds ``when``."""
-    for idx, bar in enumerate(bars):
-        if bar.exchange_ts <= when < bar.exchange_ts + _M1_INTERVAL:
-            return idx
-    return None
+        original = tape_by_seq.get(corr.corrects_seq)
+        if original is None:
+            continue
+        if not (bar.exchange_ts <= original.exchange_ts < bar_end):
+            continue
+        new_size = corr.new_size if corr.new_size is not None else 0
+        delta += new_size - original.size
+    return delta
 
 
 class _RecordingSnapshotAssembler:
@@ -281,22 +273,23 @@ class _RecordingSnapshotAssembler:
         baseline_window_days: int = 30,
         news_lookback_hours: int = 24,
     ) -> None:
-        ordered_m1 = {
+        self._m1 = {
             t.upper(): _ordered_unique(bs) for t, bs in m1_by_ticker.items()
         }
-        ordered_tape = {
-            t.upper(): _ordered_unique(ts)
+        # Corrections/busts are stored separately and folded into a bar's
+        # volume per-tick in ``assemble`` -- only those known as-of the
+        # anchor, attributed to the amended print's bar. Pre-folding here
+        # would leak a later correction into an earlier scan and break
+        # live/replay parity. The recorded bars/prints are never mutated;
+        # ``_correction_volume_delta`` recomputes the adjusted view.
+        self._tape_by_seq = {
+            t.upper(): {trade.seq: trade for trade in ts if trade.seq > 0}
             for t, ts in (tape_by_ticker or {}).items()
         }
-        ordered_corrections = {
+        self._corrections = {
             t.upper(): tuple(sorted(cs, key=lambda c: (c.exchange_ts, c.seq)))
             for t, cs in (corrections_by_ticker or {}).items()
         }
-        # Corrections/busts adjust the volume of the M1 bar that covered
-        # the amended print, so rel-vol reflects the bust deterministically
-        # in replay. The originals stay untouched in the recording; the
-        # adjustment is recomputed here from the append-only delta.
-        self._m1 = _apply_corrections(ordered_m1, ordered_tape, ordered_corrections)
         self._d1 = {
             t.upper(): _ordered_unique(bs) for t, bs in d1_by_ticker.items()
         }
@@ -360,6 +353,13 @@ class _RecordingSnapshotAssembler:
             )
             if bar is None:
                 continue
+            corrections = self._corrections.get(t, ())
+            if corrections:
+                delta = _correction_volume_delta(
+                    bar, anchor_ts, corrections, self._tape_by_seq.get(t, {}),
+                )
+                if delta != 0:
+                    bar = replace(bar, volume=max(0, bar.volume + delta))
             quote = _last_at_or_before(
                 self._quotes.get(t, ()), anchor_ts, lambda q: q.ts,
             )
