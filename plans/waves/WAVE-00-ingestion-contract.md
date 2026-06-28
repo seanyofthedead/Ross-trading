@@ -3,7 +3,7 @@ wave: 0
 title: Ingestion contract correctness
 depends_on: []
 advance_gate: "Quote/Tape/Bar carry (exchange_ts, vendor_ts, ingest_ts, seq); assembler + replay order/dedup on (ts, seq); gap detection fires on sequence discontinuity (not just socket disconnect); typed Halt + correction/bust events exist; a live-vs-replay bit-identical decision test passes; codec is SCHEMA_VERSION 2 with v1 still supported and a v1 fixture decoding/replaying under the v2 build; an idempotent recordings v1->v2 upgrade script exists; mypy --strict + ruff + pytest green on a feature branch."
-status: not_started
+status: in_progress
 ---
 
 # Wave 0 — Ingestion contract correctness
@@ -99,15 +99,24 @@ Drive the assembler with a hand-built event stream that is (a) shuffled in arriv
 
 ## Tasks
 
-- [ ] 1. Extend `data/types.py` value objects (`seq`, three ts) + add `Halt`, `Correction`.
-- [ ] 2. Update `_codec.py` + `recorder.py` (encode/decode new fields/events, bump to `SCHEMA_VERSION=2`, append-only corrections).
-- [ ] 2a. **Back-compat:** keep all v1 decoders, version-dispatch in `decode_envelope`, synthesize defaults for v1 payloads; add `tests/unit/test_codec_backcompat.py` with a captured v1 fixture.
-- [ ] 2b. **Migration:** write idempotent `scripts/upgrade_recordings_v1_to_v2.py` for any on-disk recordings; document it (a one-liner in `README.md`/`docs/` on when to run it).
-- [ ] 3. Add per-channel seq tracking + discontinuity gap detection + halt propagation in `reconnect.py`.
-- [ ] 4. Make assembler + replay order on `(exchange_ts, seq)` and dedup on `(ticker, channel, seq)`, honoring halt/correction sentinels.
-- [ ] 5. Point staleness at `ingest_ts`; separate stale/halt/gap handling in `loop.py`.
-- [ ] 6. Write the parity integration test + unit contract tests.
-- [ ] 7. ruff / mypy --strict / pytest green; CI green on feature branch.
+- [x] 1. Extend `data/types.py` value objects (`seq`, three ts) + add `Halt`, `Correction`.
+- [x] 2. Update `_codec.py` + `recorder.py` (encode/decode new fields/events, bump to `SCHEMA_VERSION=2`, append-only corrections).
+- [x] 2a. **Back-compat:** keep all v1 decoders, version-dispatch in `decode_envelope`, synthesize defaults for v1 payloads; add `tests/unit/test_codec_backcompat.py` with a captured v1 fixture.
+- [x] 2b. **Migration:** write idempotent `scripts/upgrade_recordings_v1_to_v2.py` for any on-disk recordings; document it (a one-liner in `README.md`/`docs/` on when to run it).
+- [x] 3. Add per-channel seq tracking + discontinuity gap detection + halt propagation in `reconnect.py`.
+- [x] 4. Make assembler + replay order on `(exchange_ts, seq)` and dedup on `(ticker, channel, seq)`, honoring halt/correction sentinels.
+- [x] 5. Point staleness at `ingest_ts`; separate stale/halt/gap handling in `loop.py`.
+- [x] 6. Write the parity integration test + unit contract tests.
+- [x] 7. ruff / mypy --strict / pytest green locally; CI green on feature branch pending push/review.
+
+> **Reviewer note (advance gate).** All seven tasks are implemented and the local gate is green
+> (`ruff`, `mypy --strict`, full `pytest` incl. the new `tests/integration/test_live_replay_parity.py`
+> and `tests/unit/test_codec_backcompat.py` / `test_ingestion_contract.py`; `alembic upgrade head` clean).
+> One scoping decision left for review: the journal **decision schema** was *not* extended with a new
+> `halt` `DecisionKind` — that is journal/ledger surface (Wave 1+, and `safety/`/orders are explicitly
+> out of scope here). Halts are handled at the data/assembler layer (typed event, halted-symbol
+> suppression, no pricing off a pre-halt quote on resume) and staleness now keys on `ingest_ts`. Flip
+> `status: done` once CI is green on the branch.
 
 ## Claude Code prompt
 
