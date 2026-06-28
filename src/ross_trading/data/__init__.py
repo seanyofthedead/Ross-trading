@@ -5,8 +5,10 @@ See issue #2 (Phase 1 — Data plumbing) and architecture doc §3.1.
 
 from ross_trading.data.types import (
     Bar,
+    Correction,
     FeedGap,
     FloatRecord,
+    Halt,
     Headline,
     Quote,
     Side,
@@ -15,8 +17,10 @@ from ross_trading.data.types import (
 
 __all__ = [
     "Bar",
+    "Correction",
     "FeedGap",
     "FloatRecord",
+    "Halt",
     "Headline",
     "Quote",
     "Side",

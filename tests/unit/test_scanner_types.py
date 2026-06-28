@@ -34,7 +34,7 @@ def _pick(**overrides: object) -> ScannerPick:
 def _snap(**overrides: object) -> ScannerSnapshot:
     bar = Bar(
         symbol="AVTX",
-        ts=T0,
+        exchange_ts=T0,
         timeframe="M1",
         open=Decimal("5.30"),
         high=Decimal("5.55"),

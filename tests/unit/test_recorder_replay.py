@@ -24,7 +24,7 @@ T0 = datetime(2026, 4, 26, 13, 30, tzinfo=UTC)
 def _quote(symbol: str, offset: int, bid: str, ask: str) -> Quote:
     return Quote(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         bid=Decimal(bid),
         ask=Decimal(ask),
         bid_size=100,
@@ -35,7 +35,7 @@ def _quote(symbol: str, offset: int, bid: str, ask: str) -> Quote:
 def _bar(symbol: str, offset: int, close: str) -> Bar:
     return Bar(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         timeframe="M1",
         open=Decimal(close),
         high=Decimal(close),
@@ -53,7 +53,7 @@ async def _record_fixture(out: Path) -> None:
         rec.record_bar(_bar("AVTX", 0, "4.21"))
         rec.record_bar(_bar("AVTX", 60, "4.30"))
         rec.record_tape(
-            Tape(symbol="AVTX", ts=T0, price=Decimal("4.22"), size=500, side=Side.BUY)
+            Tape(symbol="AVTX", exchange_ts=T0, price=Decimal("4.22"), size=500, side=Side.BUY)
         )
         rec.record_headline(
             Headline(

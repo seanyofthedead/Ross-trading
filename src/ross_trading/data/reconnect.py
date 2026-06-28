@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from ross_trading.core.clock import Clock, RealClock
 from ross_trading.core.errors import FeedDisconnected
-from ross_trading.data.types import Bar, FeedGap, Quote, Tape
+from ross_trading.data.types import Bar, FeedGap, Halt, Quote, Tape
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -46,6 +46,50 @@ def _noop_on_gap(_: FeedGap) -> None:
 
 INITIAL_BACKOFF = 1.0
 DEFAULT_MAX_BACKOFF = 30.0
+
+
+class _SeqTracker:
+    """Per-symbol sequence watermark for one channel.
+
+    Surfaces a :class:`FeedGap` when a forward jump in ``seq`` proves the
+    vendor silently dropped one or more messages -- the hole a
+    socket-lifecycle gap detector can't see. ``seq`` is only monotonic
+    per ``(symbol, channel)``, so the tracker is scoped to a single
+    channel and keyed by symbol.
+
+    Streams that don't carry sequence numbers leave ``seq`` at its
+    default ``0``; the tracker then never advances past ``0`` and never
+    fires, so unsequenced feeds behave exactly as before.
+    """
+
+    __slots__ = ("_channel", "_last_seq", "_last_ts")
+
+    def __init__(self, channel: str) -> None:
+        self._channel = channel
+        self._last_seq: dict[str, int] = {}
+        self._last_ts: dict[str, datetime] = {}
+
+    def observe(self, symbol: str, seq: int, exchange_ts: datetime) -> FeedGap | None:
+        prev_seq = self._last_seq.get(symbol)
+        gap: FeedGap | None = None
+        if prev_seq is not None and seq > prev_seq + 1:
+            prev_ts = self._last_ts.get(symbol, exchange_ts)
+            missed = seq - prev_seq - 1
+            gap = FeedGap(
+                symbol=symbol,
+                start=prev_ts,
+                end=exchange_ts,
+                reason=(
+                    f"seq discontinuity on {self._channel}: "
+                    f"expected {prev_seq + 1}, got {seq} ({missed} missed)"
+                ),
+            )
+        # Advance only on forward progress so a late/duplicate lower-seq
+        # arrival can't rewind the watermark and re-flag the same hole.
+        if prev_seq is None or seq > prev_seq:
+            self._last_seq[symbol] = seq
+            self._last_ts[symbol] = exchange_ts
+        return gap
 
 
 class ReconnectingProvider:
@@ -85,7 +129,9 @@ class ReconnectingProvider:
         def factory() -> AsyncIterator[Quote]:
             return self._upstream.subscribe_quotes(symbols_list)
 
-        async for quote in self._stream_with_retry(factory, ts_of=lambda q: q.ts):
+        async for quote in self._stream_with_retry(
+            factory, ts_of=lambda q: q.ts, channel="quote",
+        ):
             yield quote
 
     async def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]:
@@ -94,8 +140,22 @@ class ReconnectingProvider:
         def factory() -> AsyncIterator[Tape]:
             return self._upstream.subscribe_tape(symbols_list)
 
-        async for tape in self._stream_with_retry(factory, ts_of=lambda t: t.ts):
+        async for tape in self._stream_with_retry(
+            factory, ts_of=lambda t: t.ts, channel="tape",
+        ):
             yield tape
+
+    async def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
+        """Pass typed halt/resume events through from the upstream feed.
+
+        Halts are propagated, not gap-detected: a venue halt is a typed
+        market event, distinct from a dropped message, and the downstream
+        consumer must treat it as such (do not bridge a resume off a
+        pre-halt ``last``).
+        """
+        symbols_list = list(symbols)
+        async for halt in self._upstream.subscribe_halts(symbols_list):
+            yield halt
 
     async def subscribe_bars(
         self,
@@ -103,12 +163,16 @@ class ReconnectingProvider:
         timeframe: Timeframe,
     ) -> AsyncIterator[Bar]:
         symbols_list = list(symbols)
+        tracker = _SeqTracker(f"bar:{timeframe.value}")
         last_ts: dict[str, datetime] = {}
         backoff = INITIAL_BACKOFF
         retries = 0
         while True:
             try:
                 async for bar in self._upstream.subscribe_bars(symbols_list, timeframe):
+                    seq_gap = tracker.observe(bar.symbol, bar.seq, bar.exchange_ts)
+                    if seq_gap is not None:
+                        self._on_gap(seq_gap)
                     last_ts[bar.symbol] = bar.ts
                     backoff = INITIAL_BACKOFF
                     yield bar
@@ -147,14 +211,25 @@ class ReconnectingProvider:
         self,
         factory: Callable[[], AsyncIterator[_T]],
         ts_of: Callable[[_T], datetime],
+        channel: str,
     ) -> AsyncIterator[_T]:
-        """Shared retry/gap-callback loop for non-backfilling streams."""
+        """Shared retry/gap-callback loop for non-backfilling streams.
+
+        Fires ``on_gap`` twice over for two different kinds of loss: a
+        per-``(symbol, channel)`` sequence discontinuity (a silent vendor
+        drop, detected while the socket is still up) and a
+        :class:`FeedDisconnected` (the socket lifecycle gap).
+        """
+        tracker = _SeqTracker(channel)
         last_ts: datetime | None = None
         backoff = INITIAL_BACKOFF
         retries = 0
         while True:
             try:
                 async for event in factory():
+                    seq_gap = tracker.observe(event.symbol, event.seq, event.exchange_ts)
+                    if seq_gap is not None:
+                        self._on_gap(seq_gap)
                     last_ts = ts_of(event)
                     backoff = INITIAL_BACKOFF
                     yield event

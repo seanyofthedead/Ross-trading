@@ -262,7 +262,7 @@ def _passing_snap(
     float_shares: int | None = 8_500_000,
 ) -> ScannerSnapshot:
     bar = Bar(
-        symbol=symbol, ts=S_T0, timeframe="M1",
+        symbol=symbol, exchange_ts=S_T0, timeframe="M1",
         open=Decimal("5.00"), high=Decimal(close), low=Decimal("4.95"),
         close=Decimal(close), volume=volume,
     )

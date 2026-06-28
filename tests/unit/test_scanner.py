@@ -15,7 +15,7 @@ T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 def _bar(*, symbol: str = "AVTX", close: str = "5.50", volume: int = 5_000_000) -> Bar:
     return Bar(
         symbol=symbol,
-        ts=T0,
+        exchange_ts=T0,
         timeframe="M1",
         open=Decimal("5.00"),
         high=Decimal(close),

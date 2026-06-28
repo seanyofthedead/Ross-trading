@@ -32,7 +32,7 @@ def _bar(
 ) -> Bar:
     return Bar(
         symbol=symbol,
-        ts=ts or T0,
+        exchange_ts=ts or T0,
         timeframe="D1",
         open=Decimal(open_),
         high=Decimal(high),

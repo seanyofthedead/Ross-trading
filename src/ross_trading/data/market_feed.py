@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
     from datetime import datetime
 
-    from ross_trading.data.types import Bar, Quote, Tape
+    from ross_trading.data.types import Bar, Halt, Quote, Tape
 
 
 __all__ = ["MarketDataProvider", "Timeframe"]
@@ -32,7 +32,20 @@ __all__ = ["MarketDataProvider", "Timeframe"]
 
 @runtime_checkable
 class MarketDataProvider(Protocol):
-    """Streaming + historical access to NBBO quotes, bars, and tape prints."""
+    """Streaming + historical access to NBBO quotes, bars, and tape prints.
+
+    Sequence contract. Every streamed :class:`Quote`/:class:`Bar`/
+    :class:`Tape`/:class:`Halt` carries a ``seq`` that is **monotonic
+    per ``(symbol, channel)``** -- "channel" being quotes, tape, or
+    bars-at-a-given-timeframe. A consumer detects silent vendor drops as
+    a forward jump in ``seq`` (see :class:`~ross_trading.data.reconnect.
+    ReconnectingProvider`) rather than waiting for a socket disconnect.
+    Implementations that cannot supply real sequence numbers must leave
+    ``seq`` at ``0``; downstream gap detection then no-ops for that
+    stream. Events also carry ``exchange_ts``/``vendor_ts``/``ingest_ts``
+    (see :mod:`ross_trading.data.types`); as-of ordering keys on
+    ``(exchange_ts, seq)``.
+    """
 
     @property
     def supported_timeframes(self) -> frozenset[Timeframe]: ...
@@ -50,6 +63,15 @@ class MarketDataProvider(Protocol):
     ) -> AsyncIterator[Bar]: ...
 
     def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]: ...
+
+    def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
+        """Stream typed trading-halt / resume events.
+
+        Distinct from a feed gap: a halt is the venue suspending trading,
+        not the feed dropping data. Consumers must not fire an entry on
+        the resume off a stale pre-halt quote.
+        """
+        ...
 
     async def historical_bars(
         self,

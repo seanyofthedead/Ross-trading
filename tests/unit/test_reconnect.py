@@ -12,7 +12,7 @@ from ross_trading.core.clock import VirtualClock
 from ross_trading.core.errors import FeedDisconnected
 from ross_trading.data.market_feed import Timeframe
 from ross_trading.data.reconnect import ReconnectingProvider
-from ross_trading.data.types import Bar, FeedGap, Quote, Tape
+from ross_trading.data.types import Bar, FeedGap, Halt, Quote, Tape
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -23,7 +23,7 @@ T0 = datetime(2026, 4, 26, 13, 30, tzinfo=UTC)
 def _bar(symbol: str, offset: int) -> Bar:
     return Bar(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         timeframe="M1",
         open=Decimal("1"),
         high=Decimal("1"),
@@ -36,7 +36,7 @@ def _bar(symbol: str, offset: int) -> Bar:
 def _quote(symbol: str, offset: int) -> Quote:
     return Quote(
         symbol=symbol,
-        ts=T0 + timedelta(seconds=offset),
+        exchange_ts=T0 + timedelta(seconds=offset),
         bid=Decimal("1"),
         ask=Decimal("1.01"),
         bid_size=1,
@@ -97,6 +97,11 @@ class _FlakyMarket:
             emitted_this_call += 1
 
     async def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]:
+        del symbols
+        if False:
+            yield  # pragma: no cover
+
+    async def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
         del symbols
         if False:
             yield  # pragma: no cover
@@ -184,6 +189,11 @@ async def test_max_retries_propagates_disconnect() -> None:
                 yield  # pragma: no cover
 
         async def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]:
+            del symbols
+            if False:
+                yield  # pragma: no cover
+
+        async def subscribe_halts(self, symbols: Iterable[str]) -> AsyncIterator[Halt]:
             del symbols
             if False:
                 yield  # pragma: no cover

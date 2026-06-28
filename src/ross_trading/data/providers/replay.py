@@ -29,9 +29,11 @@ from ross_trading.core.errors import MissingRecordingError
 from ross_trading.data._codec import (
     EventType,
     decode_bar,
+    decode_correction,
     decode_envelope,
     decode_feed_gap,
     decode_float,
+    decode_halt,
     decode_headline,
     decode_quote,
     decode_tape,
@@ -45,8 +47,10 @@ if TYPE_CHECKING:
 
     from ross_trading.data.types import (
         Bar,
+        Correction,
         FeedGap,
         FloatRecord,
+        Halt,
         Headline,
         Quote,
         Tape,
@@ -95,9 +99,14 @@ class ReplayProvider:
     async def subscribe_quotes(self, symbols: Iterable[str]) -> AsyncIterator[Quote]:
         wanted = {s.upper() for s in symbols}
         anchor = _Anchor()
-        for line in self._read_lines(EventType.QUOTE):
-            _, payload = decode_envelope(line)
-            quote = decode_quote(payload)
+        for idx, line in enumerate(self._read_lines(EventType.QUOTE)):
+            env = decode_envelope(line)
+            quote = decode_quote(
+                env.payload,
+                version=env.version,
+                ts_recorded=env.ts_recorded,
+                fallback_seq=idx,
+            )
             if quote.symbol.upper() not in wanted:
                 continue
             await self._maybe_pace(quote.ts, anchor)
@@ -110,9 +119,14 @@ class ReplayProvider:
     ) -> AsyncIterator[Bar]:
         wanted = {s.upper() for s in symbols}
         anchor = _Anchor()
-        for line in self._read_lines(EventType.BAR):
-            _, payload = decode_envelope(line)
-            bar = decode_bar(payload)
+        for idx, line in enumerate(self._read_lines(EventType.BAR)):
+            env = decode_envelope(line)
+            bar = decode_bar(
+                env.payload,
+                version=env.version,
+                ts_recorded=env.ts_recorded,
+                fallback_seq=idx,
+            )
             if bar.symbol.upper() not in wanted or bar.timeframe != timeframe.value:
                 continue
             await self._maybe_pace(bar.ts, anchor)
@@ -121,13 +135,53 @@ class ReplayProvider:
     async def subscribe_tape(self, symbols: Iterable[str]) -> AsyncIterator[Tape]:
         wanted = {s.upper() for s in symbols}
         anchor = _Anchor()
-        for line in self._read_lines(EventType.TAPE):
-            _, payload = decode_envelope(line)
-            tape = decode_tape(payload)
+        for idx, line in enumerate(self._read_lines(EventType.TAPE)):
+            env = decode_envelope(line)
+            tape = decode_tape(
+                env.payload,
+                version=env.version,
+                ts_recorded=env.ts_recorded,
+                fallback_seq=idx,
+            )
             if tape.symbol.upper() not in wanted:
                 continue
             await self._maybe_pace(tape.ts, anchor)
             yield tape
+
+    async def subscribe_halts(
+        self,
+        symbols: Iterable[str] | None = None,
+    ) -> AsyncIterator[Halt]:
+        """Yield recorded :class:`Halt`/resume events in capture order.
+
+        ``symbols=None`` yields every halt; an explicit set filters to
+        those symbols. Older recordings without ``halt.jsonl.gz`` produce
+        an empty stream and replay behavior is unchanged.
+        """
+        wanted = None if symbols is None else {s.upper() for s in symbols}
+        anchor = _Anchor()
+        for line in self._read_lines(EventType.HALT):
+            env = decode_envelope(line)
+            halt = decode_halt(env.payload)
+            if wanted is not None and halt.symbol.upper() not in wanted:
+                continue
+            await self._maybe_pace(halt.exchange_ts, anchor)
+            yield halt
+
+    async def subscribe_corrections(
+        self,
+        symbols: Iterable[str] | None = None,
+    ) -> AsyncIterator[Correction]:
+        """Yield recorded :class:`Correction`/bust events in capture order."""
+        wanted = None if symbols is None else {s.upper() for s in symbols}
+        anchor = _Anchor()
+        for line in self._read_lines(EventType.CORRECTION):
+            env = decode_envelope(line)
+            correction = decode_correction(env.payload)
+            if wanted is not None and correction.symbol.upper() not in wanted:
+                continue
+            await self._maybe_pace(correction.exchange_ts, anchor)
+            yield correction
 
     async def historical_bars(
         self,
@@ -138,11 +192,16 @@ class ReplayProvider:
     ) -> Sequence[Bar]:
         upper = symbol.upper()
         result: list[Bar] = []
-        for line in self._read_lines(
-            EventType.BAR, date_from=start.date(), date_to=end.date()
+        for idx, line in enumerate(
+            self._read_lines(EventType.BAR, date_from=start.date(), date_to=end.date())
         ):
-            _, payload = decode_envelope(line)
-            bar = decode_bar(payload)
+            env = decode_envelope(line)
+            bar = decode_bar(
+                env.payload,
+                version=env.version,
+                ts_recorded=env.ts_recorded,
+                fallback_seq=idx,
+            )
             if (
                 bar.symbol.upper() == upper
                 and bar.timeframe == timeframe.value
@@ -158,8 +217,8 @@ class ReplayProvider:
         wanted = None if symbols is None else {s.upper() for s in symbols}
         anchor = _Anchor()
         for line in self._read_lines(EventType.HEADLINE):
-            _, payload = decode_envelope(line)
-            headline = decode_headline(payload)
+            env = decode_envelope(line)
+            headline = decode_headline(env.payload)
             if wanted is not None and headline.ticker.upper() not in wanted:
                 continue
             await self._maybe_pace(headline.ts, anchor)
@@ -173,8 +232,8 @@ class ReplayProvider:
         upper = symbol.upper()
         result: list[Headline] = []
         for line in self._read_lines(EventType.HEADLINE, date_from=since.date()):
-            _, payload = decode_envelope(line)
-            headline = decode_headline(payload)
+            env = decode_envelope(line)
+            headline = decode_headline(env.payload)
             if headline.ticker.upper() == upper and headline.ts >= since:
                 result.append(headline)
         return result
@@ -202,8 +261,8 @@ class ReplayProvider:
         wanted = None if symbols is None else {s.upper() for s in symbols}
         anchor = _Anchor()
         for line in self._read_lines(EventType.FEED_GAP):
-            _, payload = decode_envelope(line)
-            gap = decode_feed_gap(payload)
+            env = decode_envelope(line)
+            gap = decode_feed_gap(env.payload)
             if (
                 wanted is not None
                 and gap.symbol is not None
@@ -225,8 +284,8 @@ class ReplayProvider:
 
     def _load_float_records(self) -> None:
         for line in self._read_lines(EventType.FLOAT):
-            _, payload = decode_envelope(line)
-            rec = decode_float(payload)
+            env = decode_envelope(line)
+            rec = decode_float(env.payload)
             self._float_records[(rec.ticker.upper(), rec.as_of)] = rec
 
     def _read_lines(

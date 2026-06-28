@@ -24,9 +24,11 @@ from ross_trading.core.clock import Clock, RealClock
 from ross_trading.data._codec import (
     EventType,
     encode_bar,
+    encode_correction,
     encode_event,
     encode_feed_gap,
     encode_float,
+    encode_halt,
     encode_headline,
     encode_quote,
     encode_tape,
@@ -39,8 +41,10 @@ if TYPE_CHECKING:
 
     from ross_trading.data.types import (
         Bar,
+        Correction,
         FeedGap,
         FloatRecord,
+        Halt,
         Headline,
         Quote,
         Tape,
@@ -82,6 +86,20 @@ class FeedRecorder:
 
     def record_headline(self, h: Headline) -> None:
         self._write(EventType.HEADLINE, h.ts.date(), encode_headline(h))
+
+    def record_halt(self, h: Halt) -> None:
+        """Persist a typed halt/resume event, keyed by its exchange date."""
+        self._write(EventType.HALT, h.exchange_ts.date(), encode_halt(h))
+
+    def record_correction(self, c: Correction) -> None:
+        """Append a trade correction/bust as a standalone, append-only event.
+
+        The original print is never rewritten -- the correction lands as
+        its own line referencing ``corrects_seq``, so the recording keeps
+        both halves of the audit trail and replay can recompute the
+        adjusted volume deterministically.
+        """
+        self._write(EventType.CORRECTION, c.exchange_ts.date(), encode_correction(c))
 
     def record_float(self, r: FloatRecord) -> None:
         self._write(EventType.FLOAT, r.as_of, encode_float(r))

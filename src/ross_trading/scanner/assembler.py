@@ -27,11 +27,14 @@ class SnapshotAssembler(Protocol):
     Returns ``(snapshot_map, most_recent_quote_ts)``:
     - ``snapshot_map`` -- per-symbol ScannerSnapshot for every symbol
       in ``universe`` for which the assembler has data; symbols not
-      yet observed are omitted.
-    - ``most_recent_quote_ts`` -- ts of the freshest quote across all
-      symbols, used by the loop for the staleness self-check. ``None``
-      means "no quote ever observed" -- the loop arms staleness only
-      after the first non-None reply.
+      yet observed (or currently in a venue halt) are omitted.
+    - ``most_recent_quote_ts`` -- the freshest quote ``ingest_ts``
+      (local-receipt time) across all symbols, used by the loop for the
+      staleness self-check against wall-clock now. As-of *selection*
+      keys on ``(exchange_ts, seq)``, but staleness keys on ``ingest_ts``
+      so a vendor that stamps old exchange times can't mask a dead feed.
+      ``None`` means "no quote ever observed" -- the loop arms staleness
+      only after the first non-None reply.
     """
 
     async def assemble(

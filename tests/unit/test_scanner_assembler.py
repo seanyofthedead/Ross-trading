@@ -18,7 +18,7 @@ T0 = datetime(2026, 4, 26, 14, 30, tzinfo=UTC)
 def _snap(symbol: str = "AVTX") -> ScannerSnapshot:
     bar = Bar(
         symbol=symbol,
-        ts=T0,
+        exchange_ts=T0,
         timeframe="M1",
         open=Decimal("5.30"),
         high=Decimal("5.55"),
