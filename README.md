@@ -21,6 +21,12 @@ alembic upgrade head
 python -m ross_trading.journal.report --date YYYY-MM-DD
 ```
 
+Run the deterministic CI invariant harness directly with:
+
+```bash
+pytest tests/integration/test_safety_invariants.py
+```
+
 ## Architecture
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design (modules, decision logic, validation approach, resolved decisions).

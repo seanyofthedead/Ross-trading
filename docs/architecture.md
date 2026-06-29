@@ -354,6 +354,31 @@ Map score to one of: COLD, NEUTRAL, WARM, HOT.
 
 Cameron: “Take it slow when the market is slow, and be aggressive only when the market gives me the green light.” This is a place humans fail and agents can excel — humans want action; agents do nothing happily.
 
+### 3.11 Safety Invariant Layer
+
+A pure, dependency-free replay validator that CI uses to assert hard invariants on entry decision streams before merge.
+
+**Module:** `src/ross_trading/safety/invariants.py`
+
+**Purpose:** Provides a deterministic harness for replaying and validating sequences of `SafetyDecision` events. Sits alongside the Risk Supervisor (§3.8) and Catalyst Classifier (§3.2) but is strictly for offline replay and CI validation — it is not called on the live trading path.
+
+**Core types:**
+
+- `SafetyDecision` — immutable record of one replayable decision event. `kind` is one of `entry`, `reject`, `lockout_started`, `lockout_ended`.
+- `CatalystStatus` — `approved`, `hard_reject`, or `unknown`. Mirrors the Catalyst Classifier’s hard-veto output.
+
+**Invariants enforced by `assert_safety_invariants`:**
+
+| Invariant | Rule |
+|---|---|
+| Stop required | Every `kind="entry"` must carry a non-null `stop_price` below `entry_price`. |
+| Lockout respected | No `kind="entry"` may appear between a `lockout_started` / `lockout_ended` pair. This mirrors the Risk Supervisor’s kill-switch (§3.8). |
+| Catalyst hard-reject respected | A `kind="entry"` is rejected if its own `catalyst_status="hard_reject"`, if a prior `kind="reject"` with `catalyst_status="hard_reject"` exists for the same ticker (case-insensitive), or if a global (ticker=None) hard-reject has been seen. |
+
+**Replay determinism:** `decision_stream_hash` serializes a stream to a stable SHA-256, giving CI a pinned hash for regression detection. The canonical hash is checked in `tests/integration/test_safety_invariants.py`.
+
+**Relationship to live enforcement:** The Risk Supervisor (§3.8) enforces the lockout rule at runtime; the Catalyst Classifier (§3.2) enforces hard-rejects at runtime. This module re-validates the same rules from recorded decision streams, providing a CI-level safety net that is independent of the live execution path.
+
 -----
 
 ## 4. Decision Logic — the agent’s main loop
