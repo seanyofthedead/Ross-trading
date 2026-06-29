@@ -17,8 +17,15 @@ git clone https://github.com/seanyofthedead/Ross-trading.git
 cd Ross-trading
 pip install -e ".[dev]"
 pytest
+pytest tests/integration/test_safety_invariants.py
 alembic upgrade head
 python -m ross_trading.journal.report --date YYYY-MM-DD
+```
+
+Run the deterministic CI invariant harness directly with:
+
+```bash
+pytest tests/integration/test_safety_invariants.py
 ```
 
 ## Architecture
